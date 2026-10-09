@@ -359,7 +359,8 @@ pub struct Pong {
 /// Pings many servers at once from one socket: keeps a few dozen queries in flight and reports
 /// each answer (or timeout) through the callback.
 pub struct Pinger {
-    tx: mpsc::Sender<String>,
+    /// Addresses to ping, and whether each goes ahead of the queue.
+    tx: mpsc::Sender<(String, bool)>,
 }
 
 const IN_FLIGHT: usize = 48;
@@ -367,7 +368,7 @@ const PING_TIMEOUT: Duration = Duration::from_millis(1200);
 
 impl Pinger {
     pub fn spawn(report: impl Fn(Pong) + Send + 'static) -> Self {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel::<(String, bool)>();
         std::thread::Builder::new()
             .name("pinger".into())
             .spawn(move || {
@@ -379,9 +380,14 @@ impl Pinger {
         Self { tx }
     }
 
-    /// Queues `ip:query_port` for a ping.
+    /// Pings `ip:query_port` next (a server on screen).
     pub fn request(&self, addr: String) {
-        let _ = self.tx.send(addr);
+        let _ = self.tx.send((addr, true));
+    }
+
+    /// Queues `ip:query_port` behind everything else (a sweep of the whole list).
+    pub fn request_later(&self, addr: String) {
+        let _ = self.tx.send((addr, false));
     }
 }
 
@@ -391,22 +397,27 @@ struct Flight {
     challenges: u8,
 }
 
-fn run_pinger(rx: &mpsc::Receiver<String>, report: &dyn Fn(Pong)) -> Result<()> {
+fn run_pinger(rx: &mpsc::Receiver<(String, bool)>, report: &dyn Fn(Pong)) -> Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_read_timeout(Some(Duration::from_millis(15)))?;
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut flights: HashMap<SocketAddr, Flight> = HashMap::new();
+    let mut answered: HashMap<SocketAddr, Instant> = HashMap::new();
     let mut buf = vec![0u8; 4096];
     loop {
         if queue.is_empty() && flights.is_empty() {
             // Nothing to do: wait for work (and stop when the browser is gone).
             match rx.recv() {
-                Ok(addr) => queue.push_back(addr),
+                Ok((addr, _)) => queue.push_back(addr),
                 Err(_) => return Ok(()),
             }
         }
-        while let Ok(addr) = rx.try_recv() {
-            queue.push_back(addr);
+        while let Ok((addr, urgent)) = rx.try_recv() {
+            if urgent {
+                queue.push_front(addr);
+            } else {
+                queue.push_back(addr);
+            }
         }
         while flights.len() < IN_FLIGHT
             && let Some(addr) = queue.pop_front()
@@ -419,7 +430,13 @@ fn run_pinger(rx: &mpsc::Receiver<String>, report: &dyn Fn(Pong)) -> Result<()> 
                 });
                 continue;
             };
-            if flights.contains_key(&target) {
+            // Already on its way, or just answered (a server can be queued twice: once by a
+            // sweep, once more when it comes on screen).
+            if flights.contains_key(&target)
+                || answered
+                    .get(&target)
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(10))
+            {
                 continue;
             }
             if socket.send_to(INFO_REQUEST, target).is_ok() {
@@ -450,6 +467,7 @@ fn run_pinger(rx: &mpsc::Receiver<String>, report: &dyn Fn(Pong)) -> Result<()> 
                     } else if payload[0] == 0x49 {
                         let ping = flight.sent.elapsed().as_millis() as u32;
                         let flight = flights.remove(&from).unwrap();
+                        answered.insert(from, Instant::now());
                         report(Pong {
                             addr: flight.addr,
                             ping: Some(ping.max(1)),
@@ -474,6 +492,7 @@ fn run_pinger(rx: &mpsc::Receiver<String>, report: &dyn Fn(Pong)) -> Result<()> 
             .collect();
         for target in expired {
             let flight = flights.remove(&target).unwrap();
+            answered.insert(target, Instant::now());
             report(Pong {
                 addr: flight.addr,
                 ping: None,

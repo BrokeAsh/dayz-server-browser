@@ -28,6 +28,8 @@ const LIST_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// Ping a visible server again after this long.
 const PING_AGAIN: Duration = Duration::from_secs(120);
+/// While ping results keep arriving, re-sort or re-filter at most this often.
+const RESORT_EVERY: Duration = Duration::from_secs(1);
 
 pub enum Msg {
     List {
@@ -98,7 +100,12 @@ pub struct App {
 
     pinger: Pinger,
     live: HashMap<String, Live>,
-    pinging: HashSet<String>,
+    /// Servers waiting for a ping, and whether each was asked for ahead of the queue.
+    pinging: HashMap<String, bool>,
+    /// Ping results that would move rows arrived; applied when the pointer isn't on the list.
+    pending_resort: bool,
+    last_rebuild: Instant,
+    table_hovered: bool,
     rules: HashMap<String, Fetch<Rules>>,
     details: HashMap<u64, FileDetails>,
     details_pending: HashSet<u64>,
@@ -152,7 +159,10 @@ impl App {
             scroll_to_selected: false,
             pinger,
             live: HashMap::new(),
-            pinging: HashSet::new(),
+            pinging: HashMap::new(),
+            pending_resort: false,
+            last_rebuild: Instant::now(),
+            table_hovered: false,
             rules: HashMap::new(),
             details: HashMap::new(),
             details_pending: HashSet::new(),
@@ -325,8 +335,9 @@ impl App {
                     live.info = pong.info;
                 }
                 live.at = Some(Instant::now());
-                if self.state.filters.max_ping > 0 || self.state.sort == SortBy::Ping {
-                    self.view_dirty = true;
+                if self.ping_matters() {
+                    // Not straight away: rows moving under the pointer make the list unusable.
+                    self.pending_resort = true;
                 }
             }
             Msg::Rules(addr, result) => {
@@ -392,6 +403,39 @@ impl App {
         maps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         self.maps = maps;
         self.view_dirty = true;
+        self.ping_sweep();
+    }
+
+    /// Whether pings change which servers show or their order.
+    fn ping_matters(&self) -> bool {
+        self.state.filters.max_ping > 0 || self.state.sort == SortBy::Ping
+    }
+
+    /// When sorting or filtering by ping, pings every server that passes the other filters (in
+    /// the background, behind the ones on screen), so the order covers the whole list.
+    fn ping_sweep(&mut self) {
+        if !self.ping_matters() {
+            return;
+        }
+        for s in &self.servers {
+            let addr = s.addr();
+            let fresh = self
+                .live
+                .get(&addr)
+                .and_then(|l| l.at)
+                .is_some_and(|t| t.elapsed() < PING_AGAIN);
+            if fresh
+                || self.pinging.contains_key(&addr)
+                || !self
+                    .state
+                    .filters
+                    .matches(s, None, self.state.is_favorite(&addr))
+            {
+                continue;
+            }
+            self.pinger.request_later(addr.clone());
+            self.pinging.insert(addr, false);
+        }
     }
 
     fn reload_local(&mut self) {
@@ -467,6 +511,8 @@ impl App {
         });
         self.view = view;
         self.view_dirty = false;
+        self.pending_resort = false;
+        self.last_rebuild = Instant::now();
     }
 
     /// The mods to use for a server: what the server itself just said, else the list's.
@@ -607,6 +653,7 @@ impl App {
         if changed {
             self.view_dirty = true;
             self.state_changed();
+            self.ping_sweep();
         }
 
         ui.add_space(12.0);
@@ -815,8 +862,9 @@ impl App {
                 .get(&addr)
                 .and_then(|l| l.at)
                 .is_none_or(|t| t.elapsed() > PING_AGAIN);
-            if stale && !self.pinging.contains(&addr) {
-                self.pinging.insert(addr.clone());
+            let asked_first = self.pinging.get(&addr).copied().unwrap_or(false);
+            if stale && !asked_first {
+                self.pinging.insert(addr.clone(), true);
                 self.pinger.request(addr);
             }
         }
@@ -830,6 +878,7 @@ impl App {
             }
             self.view_dirty = true;
             self.state_changed();
+            self.ping_sweep();
         }
         if let Some(addr) = favorite_clicked {
             self.state.toggle_favorite(&addr);
@@ -1035,6 +1084,15 @@ impl App {
             if let Some(e) = &self.list.error {
                 ui.label(RichText::new(format!("· {e}")).color(Color32::from_rgb(230, 120, 90)));
             }
+            if self.ping_matters() && !self.pinging.is_empty() {
+                ui.label(RichText::new(format!("· pinging {} servers", self.pinging.len())).weak());
+            }
+            if self.pending_resort {
+                ui.label(RichText::new("· new pings wait while the pointer is on the list").weak());
+                if ui.small_button("Update now").clicked() {
+                    self.view_dirty = true;
+                }
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (text, color) = match &self.overlay {
                     OverlayStatus::Off => ("Map overlay off".to_string(), None),
@@ -1116,6 +1174,13 @@ impl eframe::App for App {
             .min_size(260.0)
             .show(ui, |ui| self.details_panel(ui));
         egui::CentralPanel::default().show(ui, |ui| {
+            self.table_hovered = ui.rect_contains_pointer(ui.max_rect());
+            if self.pending_resort
+                && !self.table_hovered
+                && self.last_rebuild.elapsed() > RESORT_EVERY
+            {
+                self.view_dirty = true;
+            }
             if self.servers.is_empty() {
                 ui.add_space(40.0);
                 ui.vertical_centered(|ui| {
