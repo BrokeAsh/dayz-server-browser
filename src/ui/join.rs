@@ -23,18 +23,27 @@ pub struct Join {
     message: Option<(String, bool)>,
     game_running: bool,
     game_checked: Option<Instant>,
-    /// Waiting for a free slot, to join as soon as there is one.
+    /// Waiting for room (a free slot and nobody queued), to join as soon as there is some.
     watch: Option<SlotWatch>,
+    /// While waiting: when the server stopped answering, and whether it stayed silent long enough
+    /// to count as a restart (not just a lost reply).
+    silent_since: Option<Instant>,
+    server_down: bool,
 }
 
-/// Asks one server for its player count every few seconds, until dropped. Its answers arrive as
-/// ordinary pings, so the window and the list both see them.
+/// Asks one server for its player count and queue every second, until dropped. Its answers arrive
+/// as ordinary pings, so the window and the list both see them.
 struct SlotWatch {
     stop: Arc<AtomicBool>,
 }
 
-/// How often to ask a full server whether a slot opened.
-const WATCH_EVERY: Duration = Duration::from_secs(3);
+/// How often to ask the server while waiting for room: often, because after a restart the
+/// slots go fast.
+const WATCH_EVERY: Duration = Duration::from_secs(1);
+/// Only an answer this recent counts as room to join.
+const FRESH: Duration = Duration::from_secs(3);
+/// Silent this long while waiting counts as a restart.
+const RESTARTING: Duration = Duration::from_secs(5);
 
 impl SlotWatch {
     fn start(app: &App, addr: &str) -> Self {
@@ -102,6 +111,8 @@ impl Join {
             game_running: false,
             game_checked: None,
             watch: None,
+            silent_since: None,
+            server_down: false,
         }
     }
 
@@ -222,6 +233,17 @@ impl App {
             .filter(|m| m.id != 0)
             .map(|m| m.id)
             .collect();
+        // The server's latest answer: whether it answered at all, and recently enough to act on.
+        let live = self.live.get(&addr);
+        let down = live.is_some_and(|l| l.at.is_some() && l.ping.is_none());
+        let fresh =
+            live.is_some_and(|l| l.ping.is_some() && l.at.is_some_and(|t| t.elapsed() < FRESH));
+        // Room means a free slot and nobody queued for it, going by that answer alone (an answer
+        // without a queue tag means no queue).
+        let live_queue = info
+            .as_ref()
+            .map(|i| a2s::parse_tags(&i.keywords).queue.unwrap_or(0));
+        let room = fresh && max > 0 && players < max && live_queue == Some(0);
 
         let join = self.join.as_mut().unwrap();
         let ready = mods.is_some()
@@ -230,8 +252,22 @@ impl App {
             && !join.game_running
             && install_error.is_none();
         let mut action: Option<Action> = None;
-        if join.watch.is_some() && !full && ready {
-            action = Some(Action::Launch(ids.clone()));
+        // Back after a restart: its mods may have changed, so ask for them again before joining.
+        let mut refresh_mods = false;
+        if join.watch.is_some() {
+            if down {
+                let since = *join.silent_since.get_or_insert_with(Instant::now);
+                join.server_down |= since.elapsed() > RESTARTING;
+            } else if fresh {
+                join.silent_since = None;
+                if join.server_down {
+                    join.server_down = false;
+                    refresh_mods = true;
+                }
+            }
+            if room && ready && !loading && !refresh_mods {
+                action = Some(Action::Launch(ids.clone()));
+            }
         }
         let mut open = true;
         egui::Window::new("Join server")
@@ -377,35 +413,51 @@ impl App {
                         .color(WARN),
                     );
                 }
-                if full {
-                    ui.label(
-                        RichText::new(match queue {
-                            Some(q) => format!(
-                                "The server is full, with {q} waiting: joining now puts you in its queue."
-                            ),
-                            None => "The server is full: DayZ may queue you or turn you away to the main menu.".into(),
-                        })
-                        .color(WARN),
-                    );
+                // Offer to wait whenever joining now wouldn't get straight in.
+                if full || queue.is_some() || down || join.watch.is_some() {
+                    let situation = if down {
+                        "The server isn't answering; it may be restarting.".to_string()
+                    } else {
+                        match (full, queue) {
+                            (true, Some(q)) => format!("The server is full, with {q} waiting: joining now puts you in its queue."),
+                            (true, None) => "The server is full: DayZ may queue you or turn you away to the main menu.".into(),
+                            (false, Some(q)) => format!("{q} waiting in the queue: joining now puts you behind them."),
+                            (false, None) => String::new(),
+                        }
+                    };
+                    if !situation.is_empty() {
+                        ui.label(RichText::new(situation).color(WARN));
+                    }
                     ui.horizontal(|ui| {
                         if join.watch.is_some() {
                             ui.spinner();
-                            ui.label("Waiting for a free slot; DayZ starts as soon as there is one.");
+                            ui.label(if down {
+                                "Waiting for it to come back with room…"
+                            } else {
+                                "Waiting for a free slot with no queue…"
+                            });
                             if ui.button("Stop").clicked() {
                                 action = Some(Action::StopWaiting);
                             }
                         } else if ui
-                            .add_enabled(ready, egui::Button::new("Join when a slot opens"))
-                            .on_hover_text(format!(
-                                "Checks the server every {} seconds and starts DayZ when a slot is free. \
-                                 Keep this window open.",
-                                WATCH_EVERY.as_secs()
-                            ))
+                            .add_enabled(ready, egui::Button::new("Join when there's room"))
+                            .on_hover_text(
+                                "Asks the server every second and starts DayZ as soon as it has a free \
+                                 slot and nobody in its queue, such as right after a restart, so you \
+                                 don't wait in the queue. Keep this window open.",
+                            )
                             .clicked()
                         {
                             action = Some(Action::WaitForSlot);
                         }
                     });
+                    if join.watch.is_some() {
+                        ui.label(
+                            RichText::new("DayZ starts by itself when there's room; the mod list is checked again after a restart.")
+                                .weak()
+                                .small(),
+                        );
+                    }
                 }
                 if join.game_running {
                     ui.label(RichText::new("DayZ is already running; close it first.").color(Color32::from_rgb(230, 170, 90)));
@@ -433,6 +485,10 @@ impl App {
             });
         if !open {
             action = Some(Action::Close);
+        }
+        if refresh_mods {
+            self.rules.remove(&addr);
+            self.request_rules(&addr);
         }
         if let Some(action) = action {
             self.join_action(action, &server, locked);
@@ -495,6 +551,8 @@ impl App {
             Action::StopWaiting => {
                 if let Some(join) = self.join.as_mut() {
                     join.watch = None;
+                    join.silent_since = None;
+                    join.server_down = false;
                 }
             }
             Action::CancelDownload => {
@@ -526,7 +584,7 @@ impl App {
                 Ok(()) => {
                     let waited = self.join.take().is_some_and(|j| j.watch.is_some());
                     self.toast(if waited {
-                        "A slot opened: starting DayZ… (the browser stays open)"
+                        "There's room: starting DayZ… (the browser stays open)"
                     } else {
                         "Starting DayZ… (the browser stays open)"
                     });

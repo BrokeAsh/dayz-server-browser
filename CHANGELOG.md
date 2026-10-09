@@ -9,4 +9,5 @@
 - A Queue column, and resizable columns.
 - Game version check: a warning for servers on another version, and a filter to hide them.
 - Connect by address, for servers the list doesn't have.
-- Join when a slot opens, for full servers.
+- Join when there's room: for a full, queued, or restarting server, asks it every second and
+  launches once it has a free slot and nobody queued, checking its mods again after a restart.

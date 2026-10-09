@@ -12,8 +12,9 @@ overlay runs in the background, ready for the game.
 - Asks the selected server for its mod list and shows which mods you have, which need an update,
   and which are missing.
 - Downloads missing mods through your Steam client, or opens their Workshop pages.
-- Launches DayZ connected to the server with its mods, and stays open afterwards. For a full
-  server, it can wait and join as soon as a slot opens.
+- Launches DayZ connected to the server with its mods, and stays open afterwards. For a full or
+  queued server, it can wait and join as soon as there's a free slot and no queue, such as right
+  after a restart.
 - Connects by address to servers the list doesn't have.
 - Optional: use Steam's own server list with your Steam Web API key instead of DZSA's.
 
