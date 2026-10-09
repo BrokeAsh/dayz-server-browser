@@ -1074,12 +1074,29 @@ impl App {
                             let (icon, color, tip) = state_badge(self.mod_state(m));
                             ui.label(RichText::new(icon).color(color))
                                 .on_hover_text(tip);
-                            let link = ui.link(&m.name);
+                            // Long names are cut to the panel's width rather than widening it;
+                            // dragging the panel wider shows more, and hovering shows all of it.
+                            let color = if m.id != 0 {
+                                ui.visuals().hyperlink_color
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            let name = ui.add(
+                                egui::Label::new(RichText::new(&m.name).color(color))
+                                    .truncate()
+                                    .sense(Sense::click()),
+                            );
                             if m.id != 0 {
-                                if link.clicked() {
+                                if name.clicked() {
                                     open_workshop(m.id);
                                 }
-                                link.on_hover_text("Open in the Steam Workshop");
+                                name.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(format!(
+                                        "{}\nClick to open in the Steam Workshop",
+                                        m.name
+                                    ));
+                            } else {
+                                name.on_hover_text(&m.name);
                             }
                         });
                     }
