@@ -287,6 +287,15 @@ impl App {
                         ui.add(egui::TextEdit::singleline(&mut join.password).password(true).desired_width(200.0));
                     });
                 }
+                let (players, max) = info
+                    .as_ref()
+                    .map_or((server.players, server.max_players), |i| (i.players, i.max_players));
+                if max > 0 && players >= max {
+                    ui.label(
+                        RichText::new("The server is full: DayZ may queue you or turn you away to the main menu.")
+                            .color(Color32::from_rgb(230, 170, 90)),
+                    );
+                }
                 if join.game_running {
                     ui.label(RichText::new("DayZ is already running; close it first.").color(Color32::from_rgb(230, 170, 90)));
                 }

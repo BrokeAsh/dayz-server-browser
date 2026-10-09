@@ -94,16 +94,23 @@ impl Helper {
             text
         });
         std::thread::spawn(move || {
+            let mut reached_steam = false;
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 match serde_json::from_str::<Event>(&line) {
-                    Ok(event) => report(event),
+                    Ok(event) => {
+                        reached_steam |= matches!(event, Event::Ready | Event::Error { .. });
+                        report(event);
+                    }
                     Err(e) => log::debug!("helper said {line:?} ({e})"),
                 }
             }
+            // Valve's library always prints a few lines there when it connects; they only matter
+            // if the helper never got as far as reporting.
             let text = errors.join().unwrap_or_default();
             let text = text.trim();
-            if !text.is_empty() {
+            log::debug!("helper stderr: {text}");
+            if !reached_steam && !text.is_empty() {
                 let tail: String = text
                     .chars()
                     .rev()
