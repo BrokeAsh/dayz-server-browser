@@ -21,6 +21,9 @@ const RULES_REQUEST: &[u8] = b"\xff\xff\xff\xffV\xff\xff\xff\xff";
 
 #[derive(Debug, Clone, Default)]
 pub struct Info {
+    pub name: String,
+    /// The world name, such as `chernarusplus`.
+    pub map: String,
     pub players: u32,
     pub max_players: u32,
     pub version: String,
@@ -81,6 +84,12 @@ pub fn resolve(addr: &str) -> Result<SocketAddr> {
         .with_context(|| format!("bad address {addr}"))?
         .next()
         .with_context(|| format!("bad address {addr}"))
+}
+
+/// Asks a server for its details, and how long the answer took.
+pub fn info(addr: SocketAddr, timeout: Duration) -> Result<(Info, Duration)> {
+    let (payload, took) = request(addr, INFO_REQUEST, false, timeout)?;
+    Ok((parse_info(&payload)?, took))
 }
 
 /// Asks a DayZ server for its mod list.
@@ -210,9 +219,11 @@ fn parse_info(payload: &[u8]) -> Result<Info> {
         bail!("not an info reply");
     }
     let _protocol = r.u8()?;
-    let mut info = Info::default();
-    let _name = r.cstr();
-    let _map = r.cstr();
+    let mut info = Info {
+        name: clean_name(&r.cstr()),
+        map: r.cstr().to_lowercase(),
+        ..Default::default()
+    };
     let _folder = r.cstr();
     let _game = r.cstr();
     let _id = r.u16()?;

@@ -3,9 +3,12 @@
 
 use eframe::egui::{self, Color32, RichText};
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{App, Fetch, Msg, OverlayStatus, open_workshop, state_badge};
+use super::{App, Fetch, Msg, OverlayStatus, WARN, open_workshop, state_badge};
+use crate::a2s::{self, Pong};
 use crate::launch;
 use crate::mods::ModState;
 use crate::server::map_title;
@@ -20,6 +23,57 @@ pub struct Join {
     message: Option<(String, bool)>,
     game_running: bool,
     game_checked: Option<Instant>,
+    /// Waiting for a free slot, to join as soon as there is one.
+    watch: Option<SlotWatch>,
+}
+
+/// Asks one server for its player count every few seconds, until dropped. Its answers arrive as
+/// ordinary pings, so the window and the list both see them.
+struct SlotWatch {
+    stop: Arc<AtomicBool>,
+}
+
+/// How often to ask a full server whether a slot opened.
+const WATCH_EVERY: Duration = Duration::from_secs(3);
+
+impl SlotWatch {
+    fn start(app: &App, addr: &str) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, ctx, addr, stopped) = (
+            app.tx.clone(),
+            app.ctx.clone(),
+            addr.to_string(),
+            stop.clone(),
+        );
+        std::thread::spawn(move || {
+            let Ok(target) = a2s::resolve(&addr) else {
+                return;
+            };
+            while !stopped.load(Ordering::Relaxed) {
+                let answer = a2s::info(target, Duration::from_secs(2)).ok();
+                let pong = Pong {
+                    addr: addr.clone(),
+                    ping: answer.as_ref().map(|(_, took)| took.as_millis() as u32),
+                    info: answer.map(|(info, _)| info),
+                };
+                if tx.send(Msg::Pong(pong)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+                let next = Instant::now() + WATCH_EVERY;
+                while Instant::now() < next && !stopped.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        Self { stop }
+    }
+}
+
+impl Drop for SlotWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 struct WorkshopRun {
@@ -47,6 +101,7 @@ impl Join {
             message: None,
             game_running: false,
             game_checked: None,
+            watch: None,
         }
     }
 
@@ -93,6 +148,8 @@ enum Action {
     OpenPages(Vec<u64>),
     CancelDownload,
     Launch(Vec<u64>),
+    WaitForSlot,
+    StopWaiting,
     Close,
 }
 
@@ -149,9 +206,33 @@ impl App {
         let helper = workshop::helper().is_some();
         let has_key = self.key.is_some();
         let install_error = self.install.as_ref().err().cloned();
+        let seen = self.seen(&server);
+        let (players, max) = seen.players.unwrap_or((server.players, server.max_players));
+        let queue = seen.queue.or(server.queue).filter(|q| *q > 0);
+        let full = max > 0 && players >= max;
+        let server_version = info
+            .as_ref()
+            .map(|i| i.version.clone())
+            .filter(|v| !v.is_empty())
+            .unwrap_or(server.version.clone());
+        let game_version = self.game_version.clone();
+        let ids: Vec<u64> = mods
+            .iter()
+            .flatten()
+            .filter(|m| m.id != 0)
+            .map(|m| m.id)
+            .collect();
 
         let join = self.join.as_mut().unwrap();
+        let ready = mods.is_some()
+            && missing == 0
+            && !join.downloading()
+            && !join.game_running
+            && install_error.is_none();
         let mut action: Option<Action> = None;
+        if join.watch.is_some() && !full && ready {
+            action = Some(Action::Launch(ids.clone()));
+        }
         let mut open = true;
         egui::Window::new("Join server")
             .collapsible(false)
@@ -161,12 +242,10 @@ impl App {
             .show(ctx, |ui| {
                 ui.label(RichText::new(&server.name).strong().size(16.0));
                 ui.label(
-                    RichText::new(format!(
-                        "{} · {}/{} players",
-                        map_title(&server.map),
-                        info.as_ref().map_or(server.players, |i| i.players),
-                        info.as_ref().map_or(server.max_players, |i| i.max_players)
-                    ))
+                    RichText::new(match queue {
+                        Some(q) => format!("{} · {players}/{max} players · {q} in queue", map_title(&server.map)),
+                        None => format!("{} · {players}/{max} players", map_title(&server.map)),
+                    })
                     .weak(),
                 );
                 ui.add_space(8.0);
@@ -287,14 +366,46 @@ impl App {
                         ui.add(egui::TextEdit::singleline(&mut join.password).password(true).desired_width(200.0));
                     });
                 }
-                let (players, max) = info
-                    .as_ref()
-                    .map_or((server.players, server.max_players), |i| (i.players, i.max_players));
-                if max > 0 && players >= max {
+                if seen.same_version == Some(false)
+                    && let Some(game) = &game_version
+                {
                     ui.label(
-                        RichText::new("The server is full: DayZ may queue you or turn you away to the main menu.")
-                            .color(Color32::from_rgb(230, 170, 90)),
+                        RichText::new(format!(
+                            "This server runs DayZ {server_version}, and you have {game}. DayZ won't join a \
+                             server on another version."
+                        ))
+                        .color(WARN),
                     );
+                }
+                if full {
+                    ui.label(
+                        RichText::new(match queue {
+                            Some(q) => format!(
+                                "The server is full, with {q} waiting: joining now puts you in its queue."
+                            ),
+                            None => "The server is full: DayZ may queue you or turn you away to the main menu.".into(),
+                        })
+                        .color(WARN),
+                    );
+                    ui.horizontal(|ui| {
+                        if join.watch.is_some() {
+                            ui.spinner();
+                            ui.label("Waiting for a free slot; DayZ starts as soon as there is one.");
+                            if ui.button("Stop").clicked() {
+                                action = Some(Action::StopWaiting);
+                            }
+                        } else if ui
+                            .add_enabled(ready, egui::Button::new("Join when a slot opens"))
+                            .on_hover_text(format!(
+                                "Checks the server every {} seconds and starts DayZ when a slot is free. \
+                                 Keep this window open.",
+                                WATCH_EVERY.as_secs()
+                            ))
+                            .clicked()
+                        {
+                            action = Some(Action::WaitForSlot);
+                        }
+                    });
                 }
                 if join.game_running {
                     ui.label(RichText::new("DayZ is already running; close it first.").color(Color32::from_rgb(230, 170, 90)));
@@ -311,15 +422,9 @@ impl App {
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let ready = mods.is_some()
-                        && missing == 0
-                        && !join.downloading()
-                        && !join.game_running
-                        && install_error.is_none();
                     let launch = ui.add_enabled(ready, egui::Button::new(RichText::new("  Launch DayZ  ").strong()));
                     if launch.clicked() {
-                        let ids = mods.iter().flatten().filter(|m| m.id != 0).map(|m| m.id).collect();
-                        action = Some(Action::Launch(ids));
+                        action = Some(Action::Launch(ids.clone()));
                     }
                     if ui.button("Close").clicked() {
                         action = Some(Action::Close);
@@ -381,6 +486,17 @@ impl App {
                     Err(e) => join.message = Some((format!("{e:#}"), true)),
                 }
             }
+            Action::WaitForSlot => {
+                let watch = SlotWatch::start(self, &server.addr());
+                if let Some(join) = self.join.as_mut() {
+                    join.watch = Some(watch);
+                }
+            }
+            Action::StopWaiting => {
+                if let Some(join) = self.join.as_mut() {
+                    join.watch = None;
+                }
+            }
             Action::CancelDownload => {
                 if let Some(run) = self.join.as_mut().and_then(|j| j.run.as_mut()) {
                     run.helper.cancel();
@@ -408,12 +524,18 @@ impl App {
             }
             Action::Launch(ids) => match self.launch(server, &ids, locked) {
                 Ok(()) => {
-                    self.join = None;
-                    self.toast("Starting DayZ… (the browser stays open)");
+                    let waited = self.join.take().is_some_and(|j| j.watch.is_some());
+                    self.toast(if waited {
+                        "A slot opened: starting DayZ… (the browser stays open)"
+                    } else {
+                        "Starting DayZ… (the browser stays open)"
+                    });
                 }
                 Err(e) => {
                     if let Some(join) = self.join.as_mut() {
                         join.message = Some((format!("{e:#}"), true));
+                        // Don't keep trying a launch that fails.
+                        join.watch = None;
                     }
                 }
             },

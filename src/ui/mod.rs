@@ -2,6 +2,7 @@
 //! and the join and settings windows. Slow work (downloads, queries) runs on threads that report
 //! back through a channel.
 
+mod connect;
 mod join;
 mod settings;
 
@@ -12,14 +13,18 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::a2s::{self, Info, Pinger, Pong, Rules};
+use crate::address::Found;
 use crate::dzsa;
 use crate::mods::{LocalMods, ModState};
 use crate::overlay;
 use crate::secret::{self, Storage};
-use crate::server::{self, Filters, ModFilter, ModRef, Perspective, Server, SortBy, map_title};
+use crate::server::{
+    self, Filters, ModFilter, ModRef, Perspective, Seen, Server, SortBy, map_title,
+};
 use crate::settings::{COLUMNS, Settings, Source, State, data_dir};
 use crate::steam::{self, Install};
 use crate::steam_api::{self, FileDetails};
+use crate::version;
 use crate::workshop;
 
 /// Fetch the list again after this long, on start or when asked.
@@ -45,6 +50,14 @@ pub enum Msg {
     Workshop(workshop::Event),
     Overlay(OverlayStatus),
     Toast(String),
+    /// The installed game's version.
+    GameVersion(Result<String, String>),
+    /// A server looked up by address: typed in (`join`: open the join window), or one added
+    /// earlier, looked up again at start.
+    Found {
+        result: Result<Found, String>,
+        join: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,8 +109,11 @@ pub struct App {
     local: LocalMods,
     local_loaded: Instant,
     key: Option<(String, Storage)>,
+    game_version: Option<String>,
 
     servers: Vec<Server>,
+    /// Servers added by address that answered, kept in the list when it's fetched again.
+    added: Vec<Server>,
     index: HashMap<String, usize>,
     list: ListStatus,
     view: Vec<usize>,
@@ -126,6 +142,7 @@ pub struct App {
 
     overlay: OverlayStatus,
     join: Option<join::Join>,
+    connect_window: Option<connect::ConnectWindow>,
     settings_window: Option<settings::SettingsWindow>,
     toast: Option<(String, Instant)>,
 }
@@ -157,7 +174,9 @@ impl App {
             local,
             local_loaded: Instant::now(),
             key: secret::load(),
+            game_version: None,
             servers: Vec::new(),
+            added: Vec::new(),
             index: HashMap::new(),
             list: ListStatus {
                 source: settings.source,
@@ -185,13 +204,54 @@ impl App {
             details_pending: HashSet::new(),
             overlay: OverlayStatus::Off,
             join: None,
+            connect_window: None,
             settings_window: None,
             toast: None,
             settings,
         };
         app.load_list(false);
         app.check_overlay(true);
+        app.read_game_version();
+        for addr in app.state.added.clone() {
+            app.spawn(move || Msg::Found {
+                result: crate::address::query(&addr).map_err(|e| format!("{e:#}")),
+                join: false,
+            });
+        }
         app
+    }
+
+    /// Reads the installed game's version, in the background (it's in a 17 MB program file).
+    fn read_game_version(&mut self) {
+        let Ok(install) = &self.install else {
+            self.game_version = None;
+            return;
+        };
+        let game = install.game.clone();
+        self.spawn(move || {
+            Msg::GameVersion(version::installed(&game).map_err(|e| format!("{e:#}")))
+        });
+    }
+
+    /// What's known about a server beyond the list: its latest answer, and the user's marks.
+    fn seen(&self, s: &Server) -> Seen {
+        let addr = s.addr();
+        let live = self.live.get(&addr);
+        let info = live.and_then(|l| l.info.as_ref());
+        let version = info
+            .map(|i| i.version.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or(&s.version);
+        Seen {
+            ping: live.and_then(|l| l.ping),
+            players: info.map(|i| (i.players, i.max_players)),
+            queue: info.and_then(|i| a2s::parse_tags(&i.keywords).queue),
+            favorite: self.state.is_favorite(&addr),
+            same_version: self
+                .game_version
+                .as_deref()
+                .and_then(|game| version::same(game, version)),
+        }
     }
 
     /// Runs `work` on a thread and delivers its message.
@@ -346,20 +406,26 @@ impl App {
             }
             Msg::Pong(pong) => {
                 self.pinging.remove(&pong.addr);
-                let before = self.players_of(&pong.addr);
+                // What the filters and sorting read from an answer, besides the ping.
+                let index = self.index.get(&pong.addr).copied();
+                let counts = |app: &Self| {
+                    let s = &app.servers[index?];
+                    let seen = app.seen(s);
+                    Some((
+                        seen.players.unwrap_or((s.players, s.max_players)),
+                        seen.queue.or(s.queue),
+                        seen.same_version,
+                    ))
+                };
+                let before = counts(self);
                 let live = self.live.entry(pong.addr.clone()).or_default();
                 live.ping = pong.ping;
                 if pong.info.is_some() {
                     live.info = pong.info;
                 }
                 live.at = Some(Instant::now());
-                let players_changed = self.players_matter()
-                    && self.players_of(&pong.addr)
-                        != before.or_else(|| {
-                            let s = &self.servers[*self.index.get(&pong.addr)?];
-                            Some((s.players, s.max_players))
-                        });
-                if self.ping_matters() || players_changed {
+                let counts_changed = self.answer_matters() && counts(self) != before;
+                if self.ping_matters() || counts_changed {
                     // Not straight away: rows moving under the pointer make the list unusable.
                     self.pending_resort = true;
                 }
@@ -406,10 +472,77 @@ impl App {
             }
             Msg::Overlay(status) => self.overlay = status,
             Msg::Toast(message) => self.toast(message),
+            Msg::GameVersion(result) => {
+                match &result {
+                    Ok(v) => log::info!("installed DayZ: {v}"),
+                    Err(e) => log::warn!("couldn't read the game's version: {e}"),
+                }
+                self.game_version = result.ok();
+                self.view_dirty = true;
+            }
+            Msg::Found { result, join } => self.found(result, join),
         }
     }
 
-    fn set_servers(&mut self, servers: Vec<Server>) {
+    /// Takes a server added by address off the list.
+    fn forget_added(&mut self, addr: &str) {
+        self.state.added.retain(|a| a != addr);
+        self.state_changed();
+        self.added.retain(|s| s.addr() != addr);
+        let servers: Vec<Server> = std::mem::take(&mut self.servers)
+            .into_iter()
+            .filter(|s| s.addr() != addr)
+            .collect();
+        if self.selected.as_deref() == Some(addr) {
+            self.selected = None;
+        }
+        self.set_servers(servers);
+    }
+
+    /// A server looked up by address answered (or didn't).
+    fn found(&mut self, result: Result<Found, String>, join: bool) {
+        let found = match result {
+            Ok(found) => found,
+            Err(e) => {
+                if join && let Some(window) = &mut self.connect_window {
+                    window.failed(e);
+                }
+                return;
+            }
+        };
+        let addr = found.server.addr();
+        let live = self.live.entry(addr.clone()).or_default();
+        live.ping = Some(found.ping);
+        live.info = Some(found.info);
+        live.at = Some(Instant::now());
+        if !self.index.contains_key(&addr) {
+            self.added.retain(|s| s.addr() != addr);
+            self.added.push(found.server);
+            let servers = std::mem::take(&mut self.servers);
+            self.set_servers(servers);
+        }
+        if join {
+            // Remember servers the list doesn't have, newest first.
+            if self.added.iter().any(|s| s.addr() == addr) {
+                self.state.added.retain(|a| *a != addr);
+                self.state.added.insert(0, addr.clone());
+                self.state.added.truncate(30);
+                self.state_changed();
+            }
+            self.connect_window = None;
+            self.select(&addr, true);
+            self.open_join(&addr);
+        }
+    }
+
+    fn set_servers(&mut self, mut servers: Vec<Server>) {
+        // Servers added by address stay until the list has them itself.
+        for added in &self.added {
+            let addr = added.addr();
+            if !servers.iter().any(|s| s.addr() == addr) {
+                servers.push(added.clone());
+            }
+        }
         self.servers = servers;
         // The old view's indexes don't apply to the new list.
         self.view.clear();
@@ -443,11 +576,12 @@ impl App {
         self.state.filters.max_ping > 0 || self.state.sort == SortBy::Ping
     }
 
-    /// Whether the list's order or filtering depends on servers' player counts, which pings
-    /// update.
-    fn players_matter(&self) -> bool {
+    /// Whether the list's order or filtering depends on what servers say when pinged (player
+    /// counts, queue, version).
+    fn answer_matters(&self) -> bool {
         let f = &self.state.filters;
-        self.state.sort == SortBy::Players
+        matches!(self.state.sort, SortBy::Players | SortBy::Queue)
+            || f.hide_other_versions
             || f.hide_empty
             || f.hide_full
             || f.min_players > 0
@@ -471,10 +605,13 @@ impl App {
                 .is_some_and(|t| t.elapsed() < PING_AGAIN);
             if fresh
                 || self.pinging.contains_key(&addr)
-                || !self
-                    .state
-                    .filters
-                    .matches(s, None, None, self.state.is_favorite(&addr))
+                || !self.state.filters.matches(
+                    s,
+                    &Seen {
+                        ping: None,
+                        ..self.seen(s)
+                    },
+                )
             {
                 continue;
             }
@@ -522,40 +659,21 @@ impl App {
         });
     }
 
-    fn ping_of(&self, addr: &str) -> Option<u32> {
-        self.live.get(addr).and_then(|l| l.ping)
-    }
-
-    /// Players and slots, from the server's latest answer.
-    fn players_of(&self, addr: &str) -> Option<(u32, u32)> {
-        let info = self.live.get(addr)?.info.as_ref()?;
-        Some((info.players, info.max_players))
-    }
-
     fn rebuild_view(&mut self) {
         let filters = &self.state.filters;
+        let seen: Vec<Seen> = self.servers.iter().map(|s| self.seen(s)).collect();
         let mut view: Vec<usize> = self
             .servers
             .iter()
             .enumerate()
-            .filter(|(_, s)| {
-                let addr = s.addr();
-                filters.matches(
-                    s,
-                    self.ping_of(&addr),
-                    self.players_of(&addr),
-                    self.state.is_favorite(&addr),
-                )
-            })
+            .filter(|(i, s)| filters.matches(s, &seen[*i]))
             .map(|(i, _)| i)
             .collect();
         let by = self.state.sort;
-        let ping = |s: &Server| self.ping_of(&s.addr());
-        let players = |s: &Server| self.players_of(&s.addr()).map_or(s.players, |(p, _)| p);
-        let favorite = |s: &Server| self.state.is_favorite(&s.addr());
         view.sort_by(|&a, &b| {
+            let (x, y) = (&seen[a], &seen[b]);
             let (a, b) = (&self.servers[a], &self.servers[b]);
-            let order = server::compare(by, a, b, ping, players, favorite);
+            let order = server::compare(by, a, x, b, y);
             let order = if self.state.sort_descending && by != SortBy::Favorite {
                 order.reverse()
             } else {
@@ -600,6 +718,14 @@ impl App {
             }
             if self.list.loading {
                 ui.spinner();
+            }
+            if ui
+                .button("Connect by address")
+                .on_hover_text("Join a server by its IP and port, even if it isn't listed")
+                .clicked()
+                && self.connect_window.is_none()
+            {
+                self.connect_window = Some(connect::ConnectWindow::default());
             }
             ui.separator();
             ui.label("Search");
@@ -721,6 +847,18 @@ impl App {
         changed |= ui.checkbox(&mut f.hide_password, "Hide locked").changed();
         changed |= ui
             .checkbox(&mut f.favorites_only, "Favorites only")
+            .changed();
+        let version_hint = match &self.game_version {
+            Some(v) => format!("Servers known to run another version than yours ({v})"),
+            None => "Your DayZ version isn't known yet".into(),
+        };
+        changed |= ui
+            .add_enabled(
+                self.game_version.is_some(),
+                egui::Checkbox::new(&mut f.hide_other_versions, "Hide other versions"),
+            )
+            .on_hover_text(version_hint)
+            .on_disabled_hover_text("Your DayZ version isn't known (is the DayZ folder found?)")
             .changed();
         ui.add_space(6.0);
         ui.label("Perspective");
@@ -908,6 +1046,7 @@ impl App {
                 head(&mut header, "Server", SortBy::Name);
                 head(&mut header, "Map", SortBy::Map);
                 head(&mut header, "Players", SortBy::Players);
+                head(&mut header, "Queue", SortBy::Queue);
                 head(&mut header, "Time", SortBy::Time);
                 head(&mut header, "Ping", SortBy::Ping);
                 head(&mut header, "Mods", SortBy::Mods);
@@ -952,15 +1091,16 @@ impl App {
                         let (players, max) = info
                             .map(|i| (i.players, i.max_players))
                             .unwrap_or((s.players, s.max_players));
+                        ui.label(format!("{players}/{max}"));
+                    });
+                    row.col(|ui| {
                         let queue = info
                             .and_then(|i| a2s::parse_tags(&i.keywords).queue)
                             .or(s.queue)
                             .filter(|q| *q > 0);
-                        let text = match queue {
-                            Some(q) => format!("{players}/{max} +{q}"),
-                            None => format!("{players}/{max}"),
-                        };
-                        ui.label(text);
+                        if let Some(queue) = queue {
+                            ui.label(queue.to_string());
+                        }
                     });
                     row.col(|ui| {
                         let time = info
@@ -1031,7 +1171,8 @@ impl App {
             } else {
                 self.state.sort = by;
                 // Most useful first: busiest, fastest, A to Z.
-                self.state.sort_descending = matches!(by, SortBy::Players | SortBy::Mods);
+                self.state.sort_descending =
+                    matches!(by, SortBy::Players | SortBy::Queue | SortBy::Mods);
             }
             self.view_dirty = true;
             self.state_changed();
@@ -1099,9 +1240,22 @@ impl App {
                 self.state_changed();
             }
         });
+        if self.state.added.contains(&addr) && self.added.iter().any(|a| a.addr() == addr) {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Added by address").weak().small());
+                if ui
+                    .small_button("Remove")
+                    .on_hover_text("Take it off the list")
+                    .clicked()
+                {
+                    self.forget_added(&addr);
+                }
+            });
+        }
         ui.add_space(8.0);
 
         let tags = info.as_ref().map(|i| a2s::parse_tags(&i.keywords));
+        let same_version = self.seen(&s).same_version;
         egui::Grid::new("details")
             .num_columns(2)
             .spacing([12.0, 4.0])
@@ -1161,9 +1315,22 @@ impl App {
                 let version = info
                     .as_ref()
                     .map(|i| i.version.clone())
+                    .filter(|v| !v.is_empty())
                     .unwrap_or(s.version.clone());
                 if !version.is_empty() {
-                    row(ui, "Version", version);
+                    ui.label(RichText::new("Version").weak());
+                    match (&self.game_version, same_version) {
+                        (Some(game), Some(false)) => {
+                            ui.label(RichText::new(&version).color(WARN))
+                                .on_hover_text(format!(
+                                    "You have {game}. DayZ won't join a server on another version."
+                                ));
+                        }
+                        _ => {
+                            ui.label(version);
+                        }
+                    }
+                    ui.end_row();
                 }
                 let battleye = tags.as_ref().map(|t| t.battleye).unwrap_or(s.battleye);
                 row(ui, "BattlEye", if battleye { "Yes" } else { "No" }.into());
@@ -1312,6 +1479,8 @@ impl App {
             self.request_rules(addr);
         }
         self.reload_local();
+        // DayZ may have updated since the browser started.
+        self.read_game_version();
         self.join = Some(join::Join::new(addr));
     }
 }
@@ -1385,6 +1554,7 @@ impl eframe::App for App {
         });
 
         self.join_window(&ctx);
+        self.connect_window(&ctx);
         self.settings_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
@@ -1409,8 +1579,8 @@ impl App {
     /// the server name gives or takes the room; the one between the server name and the map moves
     /// the map's left edge. Double-clicking one puts that column back to its first width.
     fn column_dividers(&mut self, ui: &mut egui::Ui, cells: &[egui::Rect]) {
-        // Header cells: star, server name, then the five sized columns.
-        let (Some(name), true) = (cells.get(1), cells.len() == 7) else {
+        // Header cells: star, server name, then the sized columns.
+        let (Some(name), true) = (cells.get(1), cells.len() == 2 + COLUMNS.len()) else {
             return;
         };
         let slack = name.width() - NAME_MIN;
@@ -1519,6 +1689,9 @@ fn padlock(ui: &mut egui::Ui, color: Color32) -> egui::Response {
     );
     response
 }
+
+/// Warnings that don't stop anything, such as a server on another game version.
+const WARN: Color32 = Color32::from_rgb(230, 170, 90);
 
 /// Narrowest the server name and the other list columns get.
 const NAME_MIN: f32 = 120.0;

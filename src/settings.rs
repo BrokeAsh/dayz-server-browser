@@ -93,12 +93,27 @@ pub struct State {
     pub favorites: Vec<String>,
     /// Most recent first.
     pub recent: Vec<Recent>,
-    /// Widths of the list's Map, Players, Time, Ping, and Mods columns; the server name takes the
-    /// rest.
-    pub columns: [f32; 5],
+    /// Widths of the list's Map, Players, Queue, Time, Ping, and Mods columns; the server name
+    /// takes the rest.
+    #[serde(deserialize_with = "columns")]
+    pub columns: [f32; 6],
+    /// Servers added by address (`ip:query_port`), which the list may not include.
+    pub added: Vec<String>,
 }
 
-pub const COLUMNS: [f32; 5] = [100.0, 80.0, 48.0, 44.0, 44.0];
+pub const COLUMNS: [f32; 6] = [100.0, 64.0, 48.0, 48.0, 44.0, 44.0];
+
+/// Reads the column widths, including those saved before the Queue column (which gets its
+/// default); anything else odd gives the defaults rather than failing the whole state.
+fn columns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 6], D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    let widths: Vec<f32> = serde_json::from_value(value).unwrap_or_default();
+    Ok(match widths[..] {
+        [map, players, queue, time, ping, mods] => [map, players, queue, time, ping, mods],
+        [map, players, time, ping, mods] => [map, players, COLUMNS[2], time, ping, mods],
+        _ => COLUMNS,
+    })
+}
 
 impl Default for State {
     fn default() -> Self {
@@ -109,6 +124,7 @@ impl Default for State {
             favorites: Vec::new(),
             recent: Vec::new(),
             columns: COLUMNS,
+            added: Vec::new(),
         }
     }
 }
@@ -156,4 +172,22 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_older_column_widths() {
+        let state: State =
+            serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"],"columns":[200,80,48,64,44]}"#)
+                .unwrap();
+        assert_eq!(state.columns, [200.0, 80.0, COLUMNS[2], 48.0, 64.0, 44.0]);
+        assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+        let state: State =
+            serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"],"columns":"wide"}"#).unwrap();
+        assert_eq!(state.columns, COLUMNS);
+        assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+    }
 }

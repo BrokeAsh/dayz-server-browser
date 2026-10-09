@@ -4,17 +4,21 @@ A DayZ server browser and launcher for Linux and Windows, written in Rust. It wo
 [DayZ map overlay](https://github.com/BrokeAsh/dayz-map-overlay): while the browser is open, the
 overlay runs in the background, ready for the game.
 
-- Lists every server DZSA Launcher knows (about 10,000), with search and filters (map, empty,
-  full, locked, first or third person, vanilla or modded, ping, favorites).
+- Lists every server DZSA Launcher knows (about 10,000), with search and filters (maps, empty,
+  full, locked, first or third person, vanilla or modded, players, server size, ping, game
+  version, favorites).
 - Pings the servers on screen and shows live players, queue, and in-game time.
+- Warns about servers on a different version of DayZ than yours, which the game can't join.
 - Asks the selected server for its mod list and shows which mods you have, which need an update,
   and which are missing.
 - Downloads missing mods through your Steam client, or opens their Workshop pages.
-- Launches DayZ connected to the server with its mods, and stays open afterwards.
+- Launches DayZ connected to the server with its mods, and stays open afterwards. For a full
+  server, it can wait and join as soon as a slot opens.
+- Connects by address to servers the list doesn't have.
 - Optional: use Steam's own server list with your Steam Web API key instead of DZSA's.
 
-Status: early. The list, details, settings, and overlay parts are tested; launching the game and
-downloading mods still need testing against a real DayZ install.
+Status: early. Tested on Linux with a real DayZ install, including mod downloads and joining;
+Windows is only tested in a VM so far.
 
 ## How it works
 
@@ -28,6 +32,19 @@ With your own [Steam Web API key](https://steamcommunity.com/dev/apikey) (Settin
 from Steam instead, in about ten requests (Steam returns at most about 10,000 servers per request).
 The key is kept in your system keyring (KWallet or GNOME Keyring, or Windows Credential Manager),
 never in the settings file or logs. Don't share it: it's tied to your Steam account.
+
+### Connecting by address
+
+**Connect by address** takes an IP or host name with the port from the server's ad (its game
+port). Servers answer queries on a separate port, most often the game port + 1 or 27016, so the
+browser asks the likely ones and keeps the server that says it plays on that port. Servers found
+this way stay in the list (until removed) and are looked up again each time the browser starts.
+
+### Game version
+
+The browser reads your DayZ version from the game's program file (`DayZ_x64.exe`) and compares it
+with each server's. A server on another version shows its version in orange, the join window
+warns, and **Hide other versions** hides them.
 
 ### Mods
 

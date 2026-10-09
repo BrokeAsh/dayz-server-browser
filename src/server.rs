@@ -109,6 +109,21 @@ pub struct Filters {
     pub max_players: u32,
     pub min_slots: u32,
     pub max_slots: u32,
+    /// Hide servers known to run a different version of the game than the one installed.
+    pub hide_other_versions: bool,
+}
+
+/// What's known about a server beyond the list: its latest answer to a ping, and the user's own
+/// marks. The answer is newer than the list, so it wins where both say something.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Seen {
+    pub ping: Option<u32>,
+    /// Players and slots.
+    pub players: Option<(u32, u32)>,
+    pub queue: Option<u32>,
+    pub favorite: bool,
+    /// Whether it runs the installed game's version; `None` if either is unknown.
+    pub same_version: Option<bool>,
 }
 
 /// Reads a list of maps, or the single world name (empty for any) that older versions saved.
@@ -134,17 +149,11 @@ fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D:
 }
 
 impl Filters {
-    /// `players` is the server's own answer when pinged (players, slots), which is newer than the
-    /// list's.
-    pub fn matches(
-        &self,
-        s: &Server,
-        ping: Option<u32>,
-        players: Option<(u32, u32)>,
-        favorite: bool,
-    ) -> bool {
-        let (players, slots) = players.unwrap_or((s.players, s.max_players));
-        if self.favorites_only && !favorite {
+    pub fn matches(&self, s: &Server, seen: &Seen) -> bool {
+        let (players, slots) = seen.players.unwrap_or((s.players, s.max_players));
+        if (self.favorites_only && !seen.favorite)
+            || (self.hide_other_versions && seen.same_version == Some(false))
+        {
             return false;
         }
         if !self.maps.is_empty() && !self.maps.contains(&map_key(&s.map)) {
@@ -172,7 +181,7 @@ impl Filters {
             ModFilter::Modded if !s.modded => return false,
             _ => {}
         }
-        if self.max_ping > 0 && ping.is_some_and(|p| p > self.max_ping) {
+        if self.max_ping > 0 && seen.ping.is_some_and(|p| p > self.max_ping) {
             return false;
         }
         let search = self.search.trim();
@@ -198,27 +207,24 @@ pub enum SortBy {
     Name,
     Map,
     Players,
+    Queue,
     Time,
     Ping,
     Mods,
 }
 
 /// Compares two servers by a column; unknown pings sort after known ones either way.
-pub fn compare(
-    by: SortBy,
-    a: &Server,
-    b: &Server,
-    ping: impl Fn(&Server) -> Option<u32>,
-    players: impl Fn(&Server) -> u32,
-    favorite: impl Fn(&Server) -> bool,
-) -> Ordering {
+pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Ordering {
+    let players = |s: &Server, seen: &Seen| seen.players.map_or(s.players, |(p, _)| p);
+    let queue = |s: &Server, seen: &Seen| seen.queue.or(s.queue).unwrap_or(0);
     match by {
-        SortBy::Favorite => favorite(b).cmp(&favorite(a)),
+        SortBy::Favorite => y.favorite.cmp(&x.favorite),
         SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         SortBy::Map => map_title(&a.map).cmp(&map_title(&b.map)),
-        SortBy::Players => players(a).cmp(&players(b)),
+        SortBy::Players => players(a, x).cmp(&players(b, y)),
+        SortBy::Queue => queue(a, x).cmp(&queue(b, y)),
         SortBy::Time => a.time.cmp(&b.time),
-        SortBy::Ping => match (ping(a), ping(b)) {
+        SortBy::Ping => match (x.ping, y.ping) {
             (Some(x), Some(y)) => x.cmp(&y),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
@@ -254,28 +260,40 @@ mod tests {
     fn filters() {
         let s = server();
         let mut f = Filters::default();
-        assert!(f.matches(&s, None, None, false));
+        assert!(f.matches(&s, &Seen::default()));
         f.search = "framework".into();
-        assert!(f.matches(&s, None, None, false));
+        assert!(f.matches(&s, &Seen::default()));
         f.search = "namalsk".into();
-        assert!(!f.matches(&s, None, None, false));
+        assert!(!f.matches(&s, &Seen::default()));
         f = Filters {
             mods: ModFilter::Vanilla,
             ..Default::default()
         };
-        assert!(!f.matches(&s, None, None, false));
+        assert!(!f.matches(&s, &Seen::default()));
         f = Filters {
             max_ping: 50,
             ..Default::default()
         };
-        assert!(f.matches(&s, None, None, false), "not pinged yet: keep it");
-        assert!(!f.matches(&s, Some(80), None, false));
+        assert!(f.matches(&s, &Seen::default()), "not pinged yet: keep it");
+        assert!(!f.matches(
+            &s,
+            &Seen {
+                ping: Some(80),
+                ..Default::default()
+            }
+        ));
         f = Filters {
             favorites_only: true,
             ..Default::default()
         };
-        assert!(!f.matches(&s, None, None, false));
-        assert!(f.matches(&s, None, None, true));
+        assert!(!f.matches(&s, &Seen::default()));
+        assert!(f.matches(
+            &s,
+            &Seen {
+                favorite: true,
+                ..Default::default()
+            }
+        ));
         // 10 players on a 60-slot server.
         for (min_players, max_players, min_slots, max_slots, keep) in [
             (10, 10, 60, 60, true),
@@ -292,26 +310,48 @@ mod tests {
                 max_slots,
                 ..Default::default()
             };
-            assert_eq!(f.matches(&s, None, None, false), keep, "{f:?}");
+            assert_eq!(f.matches(&s, &Seen::default()), keep, "{f:?}");
         }
         // The server's own answer wins over the list.
         f = Filters {
             min_players: 11,
             ..Default::default()
         };
-        assert!(f.matches(&s, None, Some((12, 60)), false));
+        assert!(f.matches(
+            &s,
+            &Seen {
+                players: Some((12, 60)),
+                ..Default::default()
+            }
+        ));
         f = Filters {
             hide_full: true,
             ..Default::default()
         };
-        assert!(!f.matches(&s, None, Some((60, 60)), false));
+        assert!(!f.matches(
+            &s,
+            &Seen {
+                players: Some((60, 60)),
+                ..Default::default()
+            }
+        ));
         f = Filters {
             maps: vec!["chernarus".into(), "deer isle".into()],
             ..Default::default()
         };
-        assert!(f.matches(&s, None, None, false));
+        assert!(f.matches(&s, &Seen::default()));
         f.maps.remove(1);
-        assert!(!f.matches(&s, None, None, false));
+        assert!(!f.matches(&s, &Seen::default()));
+        f = Filters {
+            hide_other_versions: true,
+            ..Default::default()
+        };
+        assert!(f.matches(&s, &Seen::default()), "unknown version: keep it");
+        let other = Seen {
+            same_version: Some(false),
+            ..Default::default()
+        };
+        assert!(!f.matches(&s, &other));
     }
 
     #[test]

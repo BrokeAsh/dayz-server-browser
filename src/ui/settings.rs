@@ -174,7 +174,11 @@ impl App {
                 ui.label("DayZ folder");
                 match &self.install {
                     Ok(install) => ui.label(
-                        RichText::new(format!("{} (from {})", install.game.display(), install.how)).weak(),
+                        RichText::new(match &self.game_version {
+                            Some(v) => format!("DayZ {v} in {} (from {})", install.game.display(), install.how),
+                            None => format!("{} (from {})", install.game.display(), install.how),
+                        })
+                        .weak(),
                     ),
                     Err(e) => ui.label(RichText::new(e).color(RED)),
                 };
@@ -287,6 +291,7 @@ impl App {
                     self.install = Ok(install);
                     self.settings.game_dir = dir;
                     window.game_message = None;
+                    self.read_game_version();
                 }
                 Err(e) => window.game_message = Some(format!("{e:#}")),
             }

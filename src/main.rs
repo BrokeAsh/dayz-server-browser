@@ -4,6 +4,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod a2s;
+mod address;
 mod dzsa;
 mod http;
 mod launch;
@@ -16,6 +17,7 @@ mod steam;
 mod steam_api;
 mod ui;
 mod vdf;
+mod version;
 #[cfg(windows)]
 mod win;
 mod workshop;
