@@ -11,3 +11,5 @@
 - Connect by address, for servers the list doesn't have.
 - Join when there's room: for a full, queued, or restarting server, asks it every second and
   launches once it has a free slot and nobody queued, checking its mods again after a restart.
+- Calmer list: servers are pinged again every 5 minutes, the list re-sorts at most every few
+  seconds, and a ping sort ignores small ping changes.
