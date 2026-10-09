@@ -6,20 +6,24 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::http;
 use crate::server::{ModRef, Server, clean_name};
+use crate::settings::write_atomic;
 
 const LIST_URL: &str = "https://dayzsalauncher.com/api/v1/launcher/servers/dayz";
 const CACHE_FILE: &str = "dzsa-servers.json";
 /// The list is about 18 MB uncompressed.
 const MAX_BODY: u64 = 128 * 1024 * 1024;
 
-/// The cached list and when it was fetched, if there is one.
-pub fn load_cache(dir: &Path) -> Option<(Vec<Server>, SystemTime)> {
+/// The cached list and when it was fetched, if there is one (no older than `max_age`, if given).
+pub fn load_cache(dir: &Path, max_age: Option<Duration>) -> Option<(Vec<Server>, SystemTime)> {
     let path = dir.join(CACHE_FILE);
     let fetched = std::fs::metadata(&path).ok()?.modified().ok()?;
+    if max_age.is_some_and(|max| fetched.elapsed().unwrap_or(Duration::MAX) > max) {
+        return None;
+    }
     let body = std::fs::read(&path).ok()?;
     parse(&body).ok().map(|servers| (servers, fetched))
 }
@@ -36,10 +40,8 @@ pub fn fetch(dir: &Path) -> Result<Vec<Server>> {
         .read_to_vec()
         .context("couldn't download the DZSA list")?;
     let servers = parse(&body)?;
-    std::fs::create_dir_all(dir).ok();
-    let tmp = dir.join(format!("{CACHE_FILE}.tmp"));
-    if std::fs::write(&tmp, &body).is_ok() {
-        let _ = std::fs::rename(&tmp, dir.join(CACHE_FILE));
+    if let Err(e) = write_atomic(&dir.join(CACHE_FILE), &body) {
+        log::warn!("couldn't cache the DZSA list: {e:#}");
     }
     Ok(servers)
 }
@@ -53,10 +55,12 @@ struct Response {
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct Entry {
+    #[serde(deserialize_with = "or_default")]
     name: String,
     /// The server's own name when DZSA shows a sponsor's custom one in `name`.
     #[serde(deserialize_with = "lenient")]
     original_name: Option<String>,
+    #[serde(deserialize_with = "or_default")]
     map: String,
     #[serde(deserialize_with = "lenient")]
     players: Option<u32>,
@@ -64,7 +68,9 @@ struct Entry {
     max_players: Option<u32>,
     #[serde(deserialize_with = "lenient")]
     game_port: Option<u16>,
+    #[serde(deserialize_with = "or_default")]
     endpoint: Endpoint,
+    #[serde(deserialize_with = "each")]
     mods: Vec<Mod>,
     #[serde(deserialize_with = "lenient")]
     password: Option<bool>,
@@ -81,6 +87,7 @@ struct Entry {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Endpoint {
+    #[serde(deserialize_with = "or_default")]
     ip: String,
     /// The query port.
     #[serde(deserialize_with = "lenient")]
@@ -90,6 +97,7 @@ struct Endpoint {
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct Mod {
+    #[serde(deserialize_with = "or_default")]
     name: String,
     #[serde(deserialize_with = "lenient")]
     steam_workshop_id: Option<u64>,
@@ -103,6 +111,28 @@ where
 {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(value).ok())
+}
+
+/// Like [`lenient`], for fields that have a natural empty value.
+fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    lenient(d).map(Option::unwrap_or_default)
+}
+
+/// A list read item by item, keeping the readable ones.
+fn each<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let items: Vec<serde_json::Value> = or_default(d)?;
+    Ok(items
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
 }
 
 fn parse(body: &[u8]) -> Result<Vec<Server>> {
@@ -163,10 +193,12 @@ mod tests {
              "timeAcceleration":null,"sponsor":true},
             {"name":"no endpoint"},
             {"name":"odd types","players":"many","endpoint":{"ip":"203.0.113.10","port":27016}},
-            {"name":"Vanilla","map":"chernarusplus","endpoint":{"ip":"203.0.113.11","port":2303}}
+            {"name":"Vanilla","map":"chernarusplus","endpoint":{"ip":"203.0.113.11","port":2303}},
+            {"name":null,"map":null,"endpoint":{"ip":"203.0.113.12","port":2303},
+             "mods":[{"name":null,"steamWorkshopId":1559212036},"junk"]}
         ]}"#;
         let servers = parse(body).unwrap();
-        assert_eq!(servers.len(), 3);
+        assert_eq!(servers.len(), 4);
         let s = &servers[0];
         assert_eq!(s.name, "Real Name");
         assert_eq!(s.map, "namalsk");
@@ -176,5 +208,10 @@ mod tests {
         assert_eq!(s.mods[0].id, 1559212036);
         assert_eq!(servers[1].players, 0, "unreadable count reads as 0");
         assert!(!servers[2].modded);
+        assert_eq!(
+            servers[3].mods.len(),
+            1,
+            "nulls don't lose the server or its mods"
+        );
     }
 }

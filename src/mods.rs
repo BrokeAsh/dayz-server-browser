@@ -100,7 +100,7 @@ impl LocalMods {
     }
 }
 
-/// The record of the links this browser made in the game folder, so it only ever removes its own.
+/// The record of the links this browser made (their full paths), so it only ever removes its own.
 #[cfg(not(windows))]
 const LINKS_FILE: &str = "mod-links.json";
 
@@ -109,34 +109,50 @@ const LINKS_FILE: &str = "mod-links.json";
 /// earlier launches are removed first. (Linux only: Windows launches use full paths.)
 #[cfg(not(windows))]
 pub fn link_mods(install: &Install, ids: &[u64], state_dir: &Path) -> Result<Vec<String>> {
+    // Check first, so a launch that can't go ahead leaves the folder as it was.
+    for &id in ids {
+        if !install.workshop.join(id.to_string()).is_dir() {
+            bail!("mod {id} isn't downloaded");
+        }
+    }
     remove_links(install, state_dir);
-    let mut made: Vec<String> = Vec::new();
+    let mut made: Vec<std::path::PathBuf> = Vec::new();
+    let result = make_links(install, ids, &mut made);
+    // Recorded even when a link failed, so the ones made are cleaned up later.
+    std::fs::create_dir_all(state_dir).ok();
+    std::fs::write(state_dir.join(LINKS_FILE), serde_json::to_vec(&made)?)
+        .context("couldn't record the mod links")?;
+    result
+}
+
+#[cfg(not(windows))]
+fn make_links(
+    install: &Install,
+    ids: &[u64],
+    made: &mut Vec<std::path::PathBuf>,
+) -> Result<Vec<String>> {
     let mut entries = Vec::new();
     for &id in ids {
         let target = install.workshop.join(id.to_string());
-        if !target.is_dir() {
-            bail!("mod {id} isn't downloaded");
-        }
         let name = link_name(id);
         let link = install.game.join(&name);
         if link.symlink_metadata().is_ok() {
-            if link.read_link().is_ok() {
+            // Left over from a launch whose record was lost: replace it only if it's a link to
+            // this same mod.
+            if link.read_link().is_ok_and(|to| to == target) {
                 std::fs::remove_file(&link).ok();
             } else {
                 bail!(
-                    "{} exists and isn't a link; not touching it",
+                    "{} already exists and isn't ours; not touching it",
                     link.display()
                 );
             }
         }
         symlink_dir(&target, &link)
             .with_context(|| format!("couldn't link {} into the game folder", target.display()))?;
-        made.push(name.clone());
+        made.push(link);
         entries.push(name);
     }
-    std::fs::create_dir_all(state_dir).ok();
-    std::fs::write(state_dir.join(LINKS_FILE), serde_json::to_vec(&made)?)
-        .context("couldn't record the mod links")?;
     Ok(entries)
 }
 
@@ -146,13 +162,19 @@ pub fn remove_links(install: &Install, state_dir: &Path) {
     let Ok(text) = std::fs::read(state_dir.join(LINKS_FILE)) else {
         return;
     };
-    let names: Vec<String> = serde_json::from_slice(&text).unwrap_or_default();
-    for name in names {
-        if !is_link_name(&name) {
-            continue;
-        }
-        let link = install.game.join(&name);
-        if link.read_link().is_ok() {
+    // Older records hold names in the game folder rather than full paths.
+    let recorded: Vec<std::path::PathBuf> = serde_json::from_slice(&text).unwrap_or_default();
+    for path in recorded {
+        let link = if path.is_absolute() {
+            path
+        } else {
+            install.game.join(path)
+        };
+        let ours = link
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_link_name);
+        if ours && link.read_link().is_ok() {
             std::fs::remove_file(&link).ok();
         }
     }
@@ -277,14 +299,20 @@ mod tests {
         // A later launch with fewer mods drops the old links.
         link_mods(&install, &[20], &state).unwrap();
         assert!(install.game.join(link_name(10)).symlink_metadata().is_err());
-        // A real folder with a link's name is left alone.
+        // A missing mod stops the launch before anything changes.
+        assert!(
+            link_mods(&install, &[20, 99], &state).is_err(),
+            "missing mod"
+        );
+        assert!(install.game.join(link_name(20)).join(".").exists());
+        // A real folder with a link's name is left alone, and the links made are still recorded.
         std::fs::create_dir_all(install.game.join(link_name(30))).unwrap();
         std::fs::create_dir_all(install.workshop.join("30")).unwrap();
-        assert!(link_mods(&install, &[30], &state).is_err());
+        assert!(link_mods(&install, &[20, 30], &state).is_err());
         assert!(install.game.join(link_name(30)).is_dir());
         remove_links(&install, &state);
         assert!(install.game.join(link_name(20)).symlink_metadata().is_err());
-        assert!(link_mods(&install, &[99], &state).is_err(), "missing mod");
+        assert!(install.game.join(link_name(30)).is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

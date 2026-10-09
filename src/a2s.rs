@@ -72,8 +72,6 @@ pub fn parse_tags(keywords: &str) -> Tags {
 pub struct Rules {
     /// The mods in load order.
     pub mods: Vec<ModRef>,
-    /// DLC the server requires: 0x1 Livonia, 0x2 Frostline.
-    pub dlc: u16,
     /// The server's list didn't fit in its reply, so `mods` may be incomplete.
     pub truncated: bool,
 }
@@ -112,11 +110,12 @@ fn request(
         "[::]:0"
     })?;
     socket.connect(addr)?;
-    socket.set_read_timeout(Some(timeout))?;
+    // The whole exchange, challenges and split replies included, has to fit in `timeout`.
+    let deadline = Instant::now() + timeout;
     let mut sent = Instant::now();
     socket.send(request)?;
     for _ in 0..3 {
-        let payload = receive(&socket).context("no reply")?;
+        let payload = receive(&socket, deadline).context("no reply")?;
         if payload.first() == Some(&0x41) && payload.len() >= 5 {
             let mut again = request.to_vec();
             if replace_challenge {
@@ -132,11 +131,17 @@ fn request(
     bail!("the server kept sending challenges")
 }
 
-/// One reply, reassembled if the server split it over several packets.
-fn receive(socket: &UdpSocket) -> Result<Vec<u8>> {
+/// One reply, reassembled if the server split it over several packets, by `deadline`.
+fn receive(socket: &UdpSocket, deadline: Instant) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; 65536];
     let mut parts: Vec<Option<Vec<u8>>> = Vec::new();
+    let mut reply_id = None;
     loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("timed out");
+        }
+        socket.set_read_timeout(Some(left))?;
         let len = socket.recv(&mut buf)?;
         let packet = &buf[..len];
         if packet.len() < 5 {
@@ -158,6 +163,9 @@ fn receive(socket: &UdpSocket) -> Result<Vec<u8>> {
         let (total, number) = (packet[8] as usize, packet[9] as usize);
         if total == 0 || number >= total {
             bail!("bad split packet");
+        }
+        if *reply_id.get_or_insert(id) != id {
+            continue; // A piece of some other (earlier) reply.
         }
         if parts.is_empty() {
             parts = vec![None; total];
@@ -235,23 +243,27 @@ fn parse_info(payload: &[u8]) -> Result<Info> {
     info.password = r.u8()? != 0;
     let _vac = r.u8()?;
     info.version = r.cstr();
-    // Extra data, flagged by bits.
-    if let Ok(edf) = r.u8() {
-        if edf & 0x80 != 0 {
-            info.game_port = Some(r.u16()?);
-        }
-        if edf & 0x10 != 0 {
-            r.take(8)?;
-        }
-        if edf & 0x40 != 0 {
-            r.u16()?;
-            r.cbytes();
-        }
-        if edf & 0x20 != 0 {
-            info.keywords = r.cstr();
-        }
-    }
+    // Extra data, flagged by bits. Optional, so a reply cut short here still counts.
+    let _ = read_extra(&mut r, &mut info);
     Ok(info)
+}
+
+fn read_extra(r: &mut Reader, info: &mut Info) -> Result<()> {
+    let edf = r.u8()?;
+    if edf & 0x80 != 0 {
+        info.game_port = Some(r.u16()?);
+    }
+    if edf & 0x10 != 0 {
+        r.take(8)?;
+    }
+    if edf & 0x40 != 0 {
+        r.u16()?;
+        r.cbytes();
+    }
+    if edf & 0x20 != 0 {
+        info.keywords = r.cstr();
+    }
+    Ok(())
 }
 
 /// The rules as raw key and value bytes. A reply cut short gives the pairs read so far.
@@ -325,8 +337,9 @@ fn decode_dayz(pairs: &[(Vec<u8>, Vec<u8>)]) -> Result<Rules> {
     let _version = r.u8()?;
     let overflow = r.u8()?;
     rules.truncated |= overflow != 0;
-    rules.dlc = r.u16()?;
-    for _ in 0..rules.dlc.count_ones() {
+    // DLC flags (0x1 Livonia, 0x2 Frostline), each followed by a hash.
+    let dlc = r.u16()?;
+    for _ in 0..dlc.count_ones() {
         r.u32()?;
     }
     let count = r.u8()?;
@@ -417,6 +430,7 @@ fn run_pinger(rx: &mpsc::Receiver<(String, bool)>, report: &dyn Fn(Pong)) -> Res
     let mut buf = vec![0u8; 4096];
     loop {
         if queue.is_empty() && flights.is_empty() {
+            answered.retain(|_, at| at.elapsed() < Duration::from_secs(10));
             // Nothing to do: wait for work (and stop when the browser is gone).
             match rx.recv() {
                 Ok((addr, _)) => queue.push_back(addr),
@@ -459,6 +473,13 @@ fn run_pinger(rx: &mpsc::Receiver<(String, bool)>, report: &dyn Fn(Pong)) -> Res
                         challenges: 0,
                     },
                 );
+            } else {
+                // Unreachable (offline, or an IPv6 server): report it rather than drop it.
+                report(Pong {
+                    addr,
+                    ping: None,
+                    info: None,
+                });
             }
         }
         match socket.recv_from(&mut buf) {
@@ -575,7 +596,6 @@ mod tests {
         let reply = rules_reply(&[a.to_vec(), b.to_vec()], 2, &[("island", "enoch")]);
         let rules = decode_dayz(&parse_rules(&reply).unwrap()).unwrap();
         assert!(!rules.truncated);
-        assert_eq!(rules.dlc, 1);
         assert_eq!(rules.mods.len(), 2);
         assert_eq!(rules.mods[0].id, 1559212036);
         assert_eq!(rules.mods[0].name, "Community Framework");

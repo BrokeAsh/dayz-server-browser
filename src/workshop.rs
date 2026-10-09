@@ -60,7 +60,8 @@ pub fn helper() -> Option<PathBuf> {
 
 /// A running helper. Dropping it closes the helper's stdin, which tells it to stop.
 pub struct Helper {
-    child: Child,
+    /// `None` once handed to the thread that waits for it to stop.
+    child: Option<Child>,
     stdin: Option<ChildStdin>,
 }
 
@@ -77,8 +78,7 @@ impl Helper {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
+            command.creation_flags(crate::win::CREATE_NO_WINDOW);
         }
         let mut child = command
             .spawn()
@@ -125,33 +125,36 @@ impl Helper {
             }
             report(Event::Exited);
         });
-        Ok(Self { child, stdin })
+        Ok(Self {
+            child: Some(child),
+            stdin,
+        })
     }
 
-    /// Asks the helper to stop, and makes sure it does.
+    /// Asks the helper to stop (closing its stdin), and makes sure it does, without waiting here:
+    /// a thread gives it two seconds, then kills it.
     pub fn cancel(&mut self) {
         self.stdin = None;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return;
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-
-    pub fn finished(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(Some(_)))
+            let _ = child.kill();
+            let _ = child.wait();
+        });
     }
 }
 
 impl Drop for Helper {
     fn drop(&mut self) {
-        if !self.finished() {
-            self.cancel();
-        }
+        self.cancel();
     }
 }
 

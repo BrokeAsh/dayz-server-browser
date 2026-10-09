@@ -1,16 +1,16 @@
 //! The "Connect by address" window: finds a server from its IP or host name and port, including
 //! servers the list doesn't have, and opens the join window for it.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use std::net::{IpAddr, SocketAddr};
 
-use super::{App, Msg};
+use super::{App, ERROR, Msg, Then};
 use crate::address;
 
 #[derive(Default)]
 pub struct ConnectWindow {
     text: String,
-    busy: bool,
+    pub(super) busy: bool,
     error: Option<String>,
     focused: bool,
 }
@@ -66,7 +66,7 @@ impl App {
                     .small(),
                 );
                 if let Some(e) = &window.error {
-                    ui.label(RichText::new(e).color(Color32::from_rgb(230, 120, 90)));
+                    ui.label(RichText::new(e).color(ERROR));
                 }
             });
         if go && !window.text.trim().is_empty() {
@@ -83,7 +83,8 @@ impl App {
                 result: address::parse(&text)
                     .and_then(|(ip, port)| address::find(ip, port))
                     .map_err(|e| format!("{e:#}")),
-                join: true,
+                addr: text,
+                then: Then::Join,
             });
         }
         if open {
@@ -95,7 +96,7 @@ impl App {
     fn listed(&self, text: &str) -> Option<String> {
         let (ip, port) = match text.parse::<SocketAddr>() {
             Ok(addr) => (addr.ip(), addr.port()),
-            Err(_) => (text.parse::<IpAddr>().ok()?, 2302),
+            Err(_) => (text.parse::<IpAddr>().ok()?, address::DEFAULT_PORT),
         };
         let ip = ip.to_string();
         let by = |game: bool| {

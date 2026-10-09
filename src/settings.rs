@@ -59,7 +59,7 @@ impl Settings {
         let path = config_dir().join("config.toml");
         match std::fs::read_to_string(&path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                log::warn!("{} is unreadable ({e}); using defaults", path.display());
+                set_aside(&path, &e);
                 Self::default()
             }),
             Err(_) => Self::default(),
@@ -74,7 +74,8 @@ impl Settings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Recent {
     pub addr: String,
     pub name: String,
@@ -131,10 +132,14 @@ impl Default for State {
 
 impl State {
     pub fn load() -> Self {
-        std::fs::read(data_dir().join("state.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        let path = data_dir().join("state.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                set_aside(&path, &e);
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -165,13 +170,38 @@ impl State {
 
 /// Writes through a temporary file, so a crash can't leave half a file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    let written = std::fs::File::create(&tmp)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            // On disk before it replaces the old file, so a crash can't leave an empty one.
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(written?)
+}
+
+/// Moves an unreadable file aside (as `<name>.bad`) so saving defaults doesn't destroy it.
+fn set_aside(path: &Path, error: &dyn std::fmt::Display) {
+    let bad = path.with_extension(format!(
+        "{}.bad",
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+    ));
+    log::warn!(
+        "{} is unreadable ({error}); starting over and keeping it as {}",
+        path.display(),
+        bad.display()
+    );
+    let _ = std::fs::rename(path, bad);
 }
 
 #[cfg(test)]

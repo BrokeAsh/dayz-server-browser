@@ -11,8 +11,8 @@ use crate::a2s::{self, Info};
 use crate::server::Server;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-/// DayZ's own default game port.
-const DEFAULT_PORT: u16 = 2302;
+/// DayZ's own default game port, assumed when an address leaves the port out.
+pub const DEFAULT_PORT: u16 = 2302;
 
 /// A server that answered, with its answer and ping (ms).
 pub struct Found {
@@ -57,7 +57,8 @@ pub fn find(ip: IpAddr, port: u16) -> Result<Found> {
         }
     }
     if !ports.contains(&27016) {
-        ports.insert(2, 27016);
+        // Third, after the port itself and the port + 1 (the two commonest).
+        ports.insert(ports.len().min(2), 27016);
     }
     let answers: Vec<(u16, Info, Duration)> = std::thread::scope(|scope| {
         let asks: Vec<_> = ports

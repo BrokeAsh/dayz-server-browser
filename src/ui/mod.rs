@@ -27,7 +27,7 @@ use crate::steam_api::{self, FileDetails};
 use crate::version;
 use crate::workshop;
 
-/// Fetch the list again after this long, on start or when asked.
+/// At start, a cached list younger than this is used instead of fetching it again.
 const LIST_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 /// The shortest gap between two fetches the user asks for.
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
@@ -47,17 +47,29 @@ pub enum Msg {
     Rules(String, Result<Rules, String>),
     Details(Vec<u64>, Result<HashMap<u64, FileDetails>, String>),
     KeyTest(Result<Storage, String>),
-    Workshop(workshop::Event),
+    /// An event from the Workshop helper run with this number.
+    Workshop(u64, workshop::Event),
     Overlay(OverlayStatus),
     Toast(String),
     /// The installed game's version.
     GameVersion(Result<String, String>),
-    /// A server looked up by address: typed in (`join`: open the join window), or one added
-    /// earlier, looked up again at start.
+    /// A server looked up by address, and what to do with it.
     Found {
+        addr: String,
         result: Result<Found, String>,
-        join: bool,
+        then: Then,
     },
+}
+
+/// What a server looked up by address is for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Then {
+    /// One added earlier, looked up again at start.
+    Keep,
+    /// Typed into the Connect window: remember it, and open the join window.
+    Join,
+    /// Picked from Recent but missing from the list: show it.
+    Show,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,8 +124,15 @@ pub struct App {
     game_version: Option<String>,
 
     servers: Vec<Server>,
-    /// Servers added by address that answered, kept in the list when it's fetched again.
+    /// Servers looked up by address that answered. The ones the fetched list lacks go after it in
+    /// `servers`, which holds `listed` fetched servers first.
     added: Vec<Server>,
+    listed: usize,
+    /// A server being looked up from Recent, and the last such lookup that failed.
+    looking_up: Option<String>,
+    lookup_failed: Option<(String, String)>,
+    /// When DayZ was last launched.
+    last_launch: Option<Instant>,
     index: HashMap<String, usize>,
     list: ListStatus,
     view: Vec<usize>,
@@ -177,6 +196,10 @@ impl App {
             game_version: None,
             servers: Vec::new(),
             added: Vec::new(),
+            listed: 0,
+            looking_up: None,
+            lookup_failed: None,
+            last_launch: None,
             index: HashMap::new(),
             list: ListStatus {
                 source: settings.source,
@@ -213,10 +236,7 @@ impl App {
         app.check_overlay(true);
         app.read_game_version();
         for addr in app.state.added.clone() {
-            app.spawn(move || Msg::Found {
-                result: crate::address::query(&addr).map_err(|e| format!("{e:#}")),
-                join: false,
-            });
+            app.look_up(addr, Then::Keep);
         }
         app
     }
@@ -242,10 +262,14 @@ impl App {
             .map(|i| i.version.as_str())
             .filter(|v| !v.is_empty())
             .unwrap_or(&s.version);
+        let tags = info.map(|i| a2s::parse_tags(&i.keywords));
         Seen {
             ping: live.and_then(|l| l.ping),
             players: info.map(|i| (i.players, i.max_players)),
-            queue: info.and_then(|i| a2s::parse_tags(&i.keywords).queue),
+            // An answer without a queue tag means nobody is queued.
+            queue: tags.as_ref().map(|t| t.queue.unwrap_or(0)),
+            time: tags.and_then(|t| t.time),
+            locked: info.is_some_and(|i| i.password),
             favorite: self.state.is_favorite(&addr),
             same_version: self
                 .game_version
@@ -285,8 +309,7 @@ impl App {
                 let dir = data_dir();
                 self.spawn(move || {
                     if !force
-                        && let Some((servers, fetched)) = dzsa::load_cache(&dir)
-                        && fetched.elapsed().unwrap_or(Duration::MAX) < LIST_MAX_AGE
+                        && let Some((servers, fetched)) = dzsa::load_cache(&dir, Some(LIST_MAX_AGE))
                     {
                         return Msg::List {
                             source,
@@ -297,7 +320,7 @@ impl App {
                     }
                     let result = dzsa::fetch(&dir).map_err(|e| format!("{e:#}"));
                     let result = match result {
-                        Err(e) => match dzsa::load_cache(&dir) {
+                        Err(e) => match dzsa::load_cache(&dir, None) {
                             // Offline: show the old list and say so.
                             Some((servers, fetched)) if !force => {
                                 return Msg::List {
@@ -395,6 +418,10 @@ impl App {
                     Ok(servers) => {
                         self.set_servers(servers);
                         self.list.fetched = Some(fetched);
+                        // A fresh cached list wasn't a request to DZSA: Refresh stays allowed.
+                        if cached && fetched.elapsed().unwrap_or(Duration::MAX) < LIST_MAX_AGE {
+                            self.list.last_request = None;
+                        }
                         self.list.error = None;
                         if cached && fetched.elapsed().unwrap_or(Duration::MAX) > LIST_MAX_AGE {
                             self.list.error =
@@ -415,6 +442,7 @@ impl App {
                         seen.players.unwrap_or((s.players, s.max_players)),
                         seen.queue.or(s.queue),
                         seen.same_version,
+                        seen.locked,
                     ))
                 };
                 let before = counts(self);
@@ -464,9 +492,20 @@ impl App {
                     }
                 }
             }
-            Msg::Workshop(event) => {
+            Msg::Workshop(run, event) => {
+                // Mods change on disk when one finishes, or when the helper is done.
+                let installed = matches!(
+                    event,
+                    workshop::Event::Item {
+                        state: workshop::ItemState::Installed,
+                        ..
+                    } | workshop::Event::Exited
+                );
                 if let Some(join) = &mut self.join {
-                    join.workshop_event(event);
+                    join.workshop_event(run, event);
+                }
+                if !installed {
+                    return;
                 }
                 self.reload_local();
             }
@@ -480,32 +519,78 @@ impl App {
                 self.game_version = result.ok();
                 self.view_dirty = true;
             }
-            Msg::Found { result, join } => self.found(result, join),
+            Msg::Found { addr, result, then } => self.found(&addr, result, then),
         }
     }
 
-    /// Takes a server added by address off the list.
+    /// After a filter, the search, or the sort changed: rebuild the list, save, and ping what the
+    /// new view needs.
+    fn filters_changed(&mut self) {
+        self.view_dirty = true;
+        self.state_changed();
+        self.ping_sweep();
+    }
+
+    fn toggle_favorite(&mut self, addr: &str) {
+        self.state.toggle_favorite(addr);
+        self.view_dirty |= self.state.filters.favorites_only || self.state.sort == SortBy::Favorite;
+        self.state_changed();
+    }
+
+    /// Asks a server whose query address (`ip:query_port`) is known for its details.
+    fn look_up(&self, addr: String, then: Then) {
+        self.spawn(move || Msg::Found {
+            result: crate::address::query(&addr).map_err(|e| format!("{e:#}")),
+            addr,
+            then,
+        });
+    }
+
+    /// Whether a server is in the list only because it was added by address.
+    fn only_added(&self, addr: &str) -> bool {
+        self.index.get(addr).is_some_and(|&i| i >= self.listed)
+    }
+
+    /// Takes a server added by address off the list and forgets it.
     fn forget_added(&mut self, addr: &str) {
         self.state.added.retain(|a| a != addr);
         self.state_changed();
-        self.added.retain(|s| s.addr() != addr);
-        let servers: Vec<Server> = std::mem::take(&mut self.servers)
-            .into_iter()
-            .filter(|s| s.addr() != addr)
-            .collect();
-        if self.selected.as_deref() == Some(addr) {
+        if self.only_added(addr) && self.selected.as_deref() == Some(addr) {
             self.selected = None;
         }
+        self.added.retain(|s| s.addr() != addr);
+        self.reapply_added();
+    }
+
+    /// Puts the servers added by address after the fetched list again, after `added` changed.
+    fn reapply_added(&mut self) {
+        let mut servers = std::mem::take(&mut self.servers);
+        servers.truncate(self.listed);
         self.set_servers(servers);
     }
 
     /// A server looked up by address answered (or didn't).
-    fn found(&mut self, result: Result<Found, String>, join: bool) {
+    fn found(&mut self, asked: &str, result: Result<Found, String>, mut then: Then) {
+        // The Connect window was closed (or is on another address) meanwhile: just add it.
+        if then == Then::Join && !self.connect_window.as_ref().is_some_and(|w| w.busy) {
+            then = Then::Keep;
+        }
+        if then == Then::Show && self.looking_up.as_deref() == Some(asked) {
+            self.looking_up = None;
+        }
         let found = match result {
             Ok(found) => found,
             Err(e) => {
-                if join && let Some(window) = &mut self.connect_window {
-                    window.failed(e);
+                match then {
+                    Then::Join => {
+                        if let Some(window) = &mut self.connect_window {
+                            window.failed(e);
+                        }
+                    }
+                    Then::Show => self.lookup_failed = Some((asked.to_string(), e)),
+                    Then::Keep => {
+                        log::info!("server {asked} (added by address) didn't answer: {e}")
+                    }
                 }
                 return;
             }
@@ -515,31 +600,36 @@ impl App {
         live.ping = Some(found.ping);
         live.info = Some(found.info);
         live.at = Some(Instant::now());
-        if !self.index.contains_key(&addr) {
+        let listed = self.index.get(&addr).is_some_and(|&i| i < self.listed);
+        if !listed {
             self.added.retain(|s| s.addr() != addr);
             self.added.push(found.server);
-            let servers = std::mem::take(&mut self.servers);
-            self.set_servers(servers);
+            self.reapply_added();
         }
-        if join {
-            // Remember servers the list doesn't have, newest first.
-            if self.added.iter().any(|s| s.addr() == addr) {
-                self.state.added.retain(|a| *a != addr);
-                self.state.added.insert(0, addr.clone());
-                self.state.added.truncate(30);
-                self.state_changed();
+        match then {
+            Then::Keep => {}
+            Then::Show => self.select(&addr, true),
+            Then::Join => {
+                // Remember servers the list doesn't have, newest first.
+                if !listed {
+                    self.state.added.retain(|a| *a != addr);
+                    self.state.added.insert(0, addr.clone());
+                    self.state.added.truncate(30);
+                    self.state_changed();
+                }
+                self.connect_window = None;
+                self.select(&addr, true);
+                self.open_join(&addr);
             }
-            self.connect_window = None;
-            self.select(&addr, true);
-            self.open_join(&addr);
         }
     }
 
+    /// Puts in a fetched list. Servers added by address that it lacks go after it.
     fn set_servers(&mut self, mut servers: Vec<Server>) {
-        // Servers added by address stay until the list has them itself.
+        self.listed = servers.len();
+        let listed: HashSet<String> = servers.iter().map(Server::addr).collect();
         for added in &self.added {
-            let addr = added.addr();
-            if !servers.iter().any(|s| s.addr() == addr) {
+            if !listed.contains(&added.addr()) {
                 servers.push(added.clone());
             }
         }
@@ -577,11 +667,12 @@ impl App {
     }
 
     /// Whether the list's order or filtering depends on what servers say when pinged (player
-    /// counts, queue, version).
+    /// counts, queue, version, password).
     fn answer_matters(&self) -> bool {
         let f = &self.state.filters;
         matches!(self.state.sort, SortBy::Players | SortBy::Queue)
             || f.hide_other_versions
+            || f.hide_password
             || f.hide_empty
             || f.hide_full
             || f.min_players > 0
@@ -674,14 +765,17 @@ impl App {
             let (x, y) = (&seen[a], &seen[b]);
             let (a, b) = (&self.servers[a], &self.servers[b]);
             let order = server::compare(by, a, x, b, y);
-            let order = if self.state.sort_descending && by != SortBy::Favorite {
+            // Servers without a ping stay last either way.
+            let unknown_ping = by == SortBy::Ping && x.ping.is_none() != y.ping.is_none();
+            let order = if self.state.sort_descending && !unknown_ping {
                 order.reverse()
             } else {
                 order
             };
             // Ties: busiest first, then by name, so the order is stable.
+            let players = |s: &Server, seen: &Seen| seen.players.map_or(s.players, |(p, _)| p);
             order
-                .then_with(|| b.players.cmp(&a.players))
+                .then_with(|| players(b, y).cmp(&players(a, x)))
                 .then_with(|| a.name.cmp(&b.name))
         });
         self.view = view;
@@ -712,7 +806,13 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let refresh = ui.add_enabled(self.refresh_allowed(), egui::Button::new("⟳ Refresh"));
+            let refresh = ui
+                .add_enabled(self.refresh_allowed(), egui::Button::new("⟳ Refresh"))
+                .on_disabled_hover_text(if self.list.loading {
+                    "Getting the list…"
+                } else {
+                    "Refreshed less than 30 seconds ago"
+                });
             if refresh.clicked() {
                 self.load_list(true);
             }
@@ -735,8 +835,7 @@ impl App {
                     .desired_width(260.0),
             );
             if search.changed() {
-                self.view_dirty = true;
-                self.state_changed();
+                self.filters_changed();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("⚙ Settings").clicked() && self.settings_window.is_none() {
@@ -848,10 +947,10 @@ impl App {
         changed |= ui
             .checkbox(&mut f.favorites_only, "Favorites only")
             .changed();
-        let version_hint = match &self.game_version {
-            Some(v) => format!("Servers known to run another version than yours ({v})"),
-            None => "Your DayZ version isn't known yet".into(),
-        };
+        let version_hint = format!(
+            "Servers known to run another version than yours ({})",
+            self.game_version.as_deref().unwrap_or_default()
+        );
         changed |= ui
             .add_enabled(
                 self.game_version.is_some(),
@@ -922,9 +1021,7 @@ impl App {
             changed = true;
         }
         if changed {
-            self.view_dirty = true;
-            self.state_changed();
-            self.ping_sweep();
+            self.filters_changed();
         }
 
         ui.add_space(12.0);
@@ -954,7 +1051,9 @@ impl App {
 
     fn select(&mut self, addr: &str, scroll: bool) {
         self.selected = Some(addr.to_string());
-        self.scroll_to_selected = scroll.then_some(Align::Center);
+        if scroll {
+            self.scroll_to_selected = Some(Align::Center);
+        }
         if self.index.contains_key(addr) {
             self.request_rules(addr);
             let (mods, _) = self.mods_for(addr);
@@ -999,7 +1098,8 @@ impl App {
             Some((row, align))
         });
 
-        // The server name takes whatever room the other columns leave, so the table always fits.
+        // The server name takes whatever room the other columns leave, so the table fits unless
+        // the window is narrower than the columns' minimums.
         let columns = self.state.columns;
         let mut builder = TableBuilder::new(ui)
             .striped(true)
@@ -1060,10 +1160,10 @@ impl App {
                     let s = &self.servers[self.view[row.index()]];
                     let addr = s.addr();
                     let live = self.live.get(&addr);
-                    let info = live.and_then(|l| l.info.as_ref());
+                    let seen = self.seen(s);
                     visible.push(addr.clone());
                     row.set_selected(self.selected.as_deref() == Some(&addr));
-                    let favorite = state.is_favorite(&addr);
+                    let favorite = seen.favorite;
                     row.col(|ui| {
                         let star = if favorite { "★" } else { "☆" };
                         let color = if favorite {
@@ -1088,25 +1188,21 @@ impl App {
                         ui.label(map_title(&s.map));
                     });
                     row.col(|ui| {
-                        let (players, max) = info
-                            .map(|i| (i.players, i.max_players))
-                            .unwrap_or((s.players, s.max_players));
+                        let (players, max) = seen.players.unwrap_or((s.players, s.max_players));
                         ui.label(format!("{players}/{max}"));
                     });
                     row.col(|ui| {
-                        let queue = info
-                            .and_then(|i| a2s::parse_tags(&i.keywords).queue)
-                            .or(s.queue)
-                            .filter(|q| *q > 0);
-                        if let Some(queue) = queue {
+                        if let Some(queue) = seen.queue.or(s.queue).filter(|q| *q > 0) {
                             ui.label(queue.to_string());
                         }
                     });
                     row.col(|ui| {
-                        let time = info
-                            .and_then(|i| a2s::parse_tags(&i.keywords).time)
-                            .or_else(|| s.time.clone());
-                        ui.label(time.unwrap_or_default());
+                        ui.label(
+                            seen.time
+                                .as_ref()
+                                .or(s.time.as_ref())
+                                .map_or("", |t| t.as_str()),
+                        );
                     });
                     row.col(|ui| match live {
                         Some(Live { ping: Some(p), .. }) => {
@@ -1135,7 +1231,7 @@ impl App {
                         ui.label(text);
                     });
                     row.col(|ui| {
-                        if s.password || info.is_some_and(|i| i.password) {
+                        if s.password || seen.locked {
                             let color = ui.visuals().text_color();
                             padlock(ui, color).on_hover_text("Needs a password");
                         }
@@ -1170,25 +1266,44 @@ impl App {
                 self.state.sort_descending = !self.state.sort_descending;
             } else {
                 self.state.sort = by;
-                // Most useful first: busiest, fastest, A to Z.
+                // Biggest first for counts (players, queue, mods); otherwise smallest first:
+                // favorites first, fastest, earliest, A to Z.
                 self.state.sort_descending =
                     matches!(by, SortBy::Players | SortBy::Queue | SortBy::Mods);
             }
-            self.view_dirty = true;
-            self.state_changed();
-            self.ping_sweep();
+            self.filters_changed();
         }
         if let Some(addr) = favorite_clicked {
-            self.state.toggle_favorite(&addr);
-            self.view_dirty |=
-                self.state.filters.favorites_only || self.state.sort == SortBy::Favorite;
-            self.state_changed();
+            self.toggle_favorite(&addr);
         }
         if let Some((addr, join)) = clicked {
             self.select(&addr, false);
             if join {
                 self.open_join(&addr);
             }
+        }
+    }
+
+    /// The details panel for a server (picked from Recent) that the list doesn't have.
+    fn missing_server(&mut self, ui: &mut egui::Ui, addr: &str) {
+        ui.add_space(4.0);
+        ui.label("This server isn't in the current list.");
+        if self.looking_up.as_deref() == Some(addr) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Asking it directly…");
+            });
+            return;
+        }
+        if let Some((failed, e)) = &self.lookup_failed
+            && failed == addr
+        {
+            ui.label(RichText::new(format!("It didn't answer: {e}")).color(ERROR));
+        }
+        if ui.button("Ask the server").clicked() {
+            self.lookup_failed = None;
+            self.looking_up = Some(addr.to_string());
+            self.look_up(addr.to_string(), Then::Show);
         }
     }
 
@@ -1201,7 +1316,7 @@ impl App {
             return;
         };
         let Some(&i) = self.index.get(&addr) else {
-            ui.label("This server isn't in the current list.");
+            self.missing_server(ui, &addr);
             return;
         };
         let s = self.servers[i].clone();
@@ -1235,12 +1350,10 @@ impl App {
                 "☆ Favorite"
             };
             if ui.selectable_label(favorite, label).clicked() {
-                self.state.toggle_favorite(&addr);
-                self.view_dirty |= self.state.filters.favorites_only;
-                self.state_changed();
+                self.toggle_favorite(&addr);
             }
         });
-        if self.state.added.contains(&addr) && self.added.iter().any(|a| a.addr() == addr) {
+        if self.state.added.contains(&addr) && self.only_added(&addr) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Added by address").weak().small());
                 if ui
@@ -1426,13 +1539,15 @@ impl App {
                 ui.label(RichText::new(format!("· updated {}", ago(fetched))).weak());
             }
             if let Some(e) = &self.list.error {
-                ui.label(RichText::new(format!("· {e}")).color(Color32::from_rgb(230, 120, 90)));
+                ui.label(RichText::new(format!("· {e}")).color(ERROR));
             }
             if self.ping_matters() && !self.pinging.is_empty() {
                 ui.label(RichText::new(format!("· pinging {} servers", self.pinging.len())).weak());
             }
-            if self.pending_resort {
-                ui.label(RichText::new("· new pings wait while the pointer is on the list").weak());
+            if self.pending_resort && self.table_hovered {
+                ui.label(
+                    RichText::new("· new results wait while the pointer is on the list").weak(),
+                );
                 if ui.small_button("Update now").clicked() {
                     self.view_dirty = true;
                 }
@@ -1441,18 +1556,9 @@ impl App {
                 let (text, color) = match &self.overlay {
                     OverlayStatus::Off => ("Map overlay off".to_string(), None),
                     OverlayStatus::Checking => ("Map overlay: starting…".into(), None),
-                    OverlayStatus::NotFound => (
-                        "Map overlay not installed".into(),
-                        Some(Color32::from_rgb(230, 170, 90)),
-                    ),
-                    OverlayStatus::Running => (
-                        "Map overlay ready".into(),
-                        Some(Color32::from_rgb(110, 200, 120)),
-                    ),
-                    OverlayStatus::Failed(e) => (
-                        format!("Map overlay: {e}"),
-                        Some(Color32::from_rgb(230, 120, 90)),
-                    ),
+                    OverlayStatus::NotFound => ("Map overlay not installed".into(), Some(WARN)),
+                    OverlayStatus::Running => ("Map overlay ready".into(), Some(GOOD)),
+                    OverlayStatus::Failed(e) => (format!("Map overlay: {e}"), Some(ERROR)),
                 };
                 let label = match color {
                     Some(c) => RichText::new(text).color(c),
@@ -1462,17 +1568,19 @@ impl App {
                 ui.separator();
                 match &self.install {
                     Ok(_) => ui.label(RichText::new("DayZ found").weak()),
-                    Err(e) => ui.label(RichText::new(e).color(Color32::from_rgb(230, 120, 90))),
+                    Err(e) => ui.label(RichText::new(e).color(ERROR)),
                 };
             });
         });
     }
 
     fn open_join(&mut self, addr: &str) {
-        if !self.index.contains_key(addr) {
+        let Some(&i) = self.index.get(addr) else {
             return;
+        };
+        if self.selected.as_deref() != Some(addr) {
+            self.select(addr, false);
         }
-        self.select(addr, false);
         // A fresh mod list for joining, even if one was fetched earlier.
         if !matches!(self.rules.get(addr), Some(Fetch::Loading)) {
             self.rules.remove(addr);
@@ -1481,7 +1589,7 @@ impl App {
         self.reload_local();
         // DayZ may have updated since the browser started.
         self.read_game_version();
-        self.join = Some(join::Join::new(addr));
+        self.join = Some(join::Join::new(&self.servers[i]));
     }
 }
 
@@ -1690,8 +1798,13 @@ fn padlock(ui: &mut egui::Ui, color: Color32) -> egui::Response {
     response
 }
 
+/// Failures, and mods that are missing.
+const ERROR: Color32 = Color32::from_rgb(230, 120, 90);
 /// Warnings that don't stop anything, such as a server on another game version.
 const WARN: Color32 = Color32::from_rgb(230, 170, 90);
+/// Middling: a fair ping, a mod with an update.
+const FAIR: Color32 = Color32::from_rgb(220, 200, 90);
+const GOOD: Color32 = Color32::from_rgb(110, 200, 120);
 
 /// Narrowest the server name and the other list columns get.
 const NAME_MIN: f32 = 120.0;
@@ -1700,21 +1813,17 @@ const LOCK_WIDTH: f32 = 20.0;
 
 fn ping_color(ping: u32) -> Color32 {
     match ping {
-        0..=60 => Color32::from_rgb(110, 200, 120),
-        61..=120 => Color32::from_rgb(220, 200, 90),
-        _ => Color32::from_rgb(230, 120, 90),
+        0..=60 => GOOD,
+        61..=120 => FAIR,
+        _ => ERROR,
     }
 }
 
 fn state_badge(state: ModState) -> (&'static str, Color32, &'static str) {
     match state {
-        ModState::Installed => ("✔", Color32::from_rgb(110, 200, 120), "Installed"),
-        ModState::Outdated => (
-            "⟳",
-            Color32::from_rgb(220, 200, 90),
-            "Installed, but there's an update",
-        ),
-        ModState::Missing => ("⬇", Color32::from_rgb(230, 120, 90), "Not downloaded"),
+        ModState::Installed => ("✔", GOOD, "Installed"),
+        ModState::Outdated => ("⟳", FAIR, "Installed, but there's an update"),
+        ModState::Missing => ("⬇", ERROR, "Not downloaded"),
         ModState::NotWorkshop => ("?", Color32::GRAY, "Not on the Steam Workshop"),
     }
 }

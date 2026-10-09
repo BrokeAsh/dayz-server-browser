@@ -115,12 +115,16 @@ pub struct Filters {
 
 /// What's known about a server beyond the list: its latest answer to a ping, and the user's own
 /// marks. The answer is newer than the list, so it wins where both say something.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Seen {
     pub ping: Option<u32>,
     /// Players and slots.
     pub players: Option<(u32, u32)>,
     pub queue: Option<u32>,
+    /// In-game time, `HH:MM`.
+    pub time: Option<String>,
+    /// Needs a password (the Steam list doesn't say; the server's answer does).
+    pub locked: bool,
     pub favorite: bool,
     /// Whether it runs the installed game's version; `None` if either is unknown.
     pub same_version: Option<bool>,
@@ -161,7 +165,7 @@ impl Filters {
         }
         if (self.hide_empty && players == 0)
             || (self.hide_full && slots > 0 && players >= slots)
-            || (self.hide_password && s.password)
+            || (self.hide_password && (s.password || seen.locked))
         {
             return false;
         }
@@ -213,7 +217,8 @@ pub enum SortBy {
     Mods,
 }
 
-/// Compares two servers by a column; unknown pings sort after known ones either way.
+/// Compares two servers by a column, smallest first. Unknown pings compare as greater, so the
+/// caller keeps them last when it reverses the order.
 pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Ordering {
     let players = |s: &Server, seen: &Seen| seen.players.map_or(s.players, |(p, _)| p);
     let queue = |s: &Server, seen: &Seen| seen.queue.or(s.queue).unwrap_or(0);
@@ -223,14 +228,19 @@ pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Orderi
         SortBy::Map => map_title(&a.map).cmp(&map_title(&b.map)),
         SortBy::Players => players(a, x).cmp(&players(b, y)),
         SortBy::Queue => queue(a, x).cmp(&queue(b, y)),
-        SortBy::Time => a.time.cmp(&b.time),
+        SortBy::Time => x
+            .time
+            .as_ref()
+            .or(a.time.as_ref())
+            .cmp(&y.time.as_ref().or(b.time.as_ref())),
         SortBy::Ping => match (x.ping, y.ping) {
             (Some(x), Some(y)) => x.cmp(&y),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
         },
-        SortBy::Mods => a.mods.len().cmp(&b.mods.len()),
+        // Servers whose mods aren't listed (Steam's list) still sort after vanilla ones.
+        SortBy::Mods => (a.modded, a.mods.len()).cmp(&(b.modded, b.mods.len())),
     }
 }
 

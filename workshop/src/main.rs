@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use steamworks::{Client, ItemState, PublishedFileId};
 
 const DAYZ: u32 = 221100;
-/// Give up on an item whose download hasn't moved for this long.
+/// Give up on what's left when no download has moved for this long. Measured across all items:
+/// Steam downloads one at a time, so the ones queued behind a big mod wait without progress.
 const STALL: Duration = Duration::from_secs(600);
 /// Ask Steam again if a subscribed item hasn't started downloading after this long.
 const NUDGE: Duration = Duration::from_secs(15);
@@ -34,7 +35,6 @@ struct Item {
     id: u64,
     reported: Option<(&'static str, u64, u64)>,
     last_progress: (u64, u64),
-    last_change: Instant,
     last_nudge: Instant,
     finished: bool,
 }
@@ -99,7 +99,6 @@ fn main() {
             id,
             reported: None,
             last_progress: (0, 0),
-            last_change: now,
             last_nudge: now,
             finished: false,
         })
@@ -118,6 +117,8 @@ fn main() {
         }
     }
 
+    // When any item last moved (progress, or finishing).
+    let mut last_activity = Instant::now();
     loop {
         if stop.load(Ordering::SeqCst) {
             std::process::exit(3);
@@ -155,12 +156,13 @@ fn main() {
                 let size = ugc.item_install_info(file).map_or(0, |i| i.size_on_disk);
                 item.report("installed", size, size, None);
                 item.finished = true;
+                last_activity = Instant::now();
                 continue;
             }
             let progress = ugc.item_download_info(file).unwrap_or((0, 0));
             if progress != item.last_progress {
                 item.last_progress = progress;
-                item.last_change = Instant::now();
+                last_activity = Instant::now();
             }
             if state.contains(ItemState::DOWNLOADING) || progress.1 > 0 {
                 item.report("downloading", progress.0, progress.1, None);
@@ -170,12 +172,12 @@ fn main() {
                 ugc.download_item(file, true);
                 item.last_nudge = Instant::now();
             }
-            if item.last_change.elapsed() > STALL {
+            if last_activity.elapsed() > STALL {
                 item.report(
                     "failed",
                     progress.0,
                     progress.1,
-                    Some("the download stalled".into()),
+                    Some("Steam stopped downloading".into()),
                 );
                 item.finished = true;
             }

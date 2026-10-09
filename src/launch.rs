@@ -128,11 +128,9 @@ fn build_steam(
     if let Some(password) = password.filter(|p| !p.is_empty()) {
         args.push(format!("-password={password}"));
     }
-    if mod_ids.is_empty() {
-        mods::remove_links(install, state_dir);
-    } else {
-        let entries = mods::link_mods(install, mod_ids, state_dir)?;
-        args.push(format!("-mod={}", entries.join(";")));
+    if !mod_ids.is_empty() {
+        let names: Vec<String> = mod_ids.iter().map(|&id| mods::link_name(id)).collect();
+        args.push(format!("-mod={}", names.join(";")));
     }
     args.extend(extra.iter().cloned());
     let length: usize = args.iter().map(|a| a.len() + 1).sum();
@@ -141,6 +139,12 @@ fn build_steam(
             "the launch arguments are {length} characters, more than Steam on Linux handles \
              (about 1,000); shorten the extra launch arguments"
         );
+    }
+    // Only now that the launch can go ahead: the links those names point at.
+    if mod_ids.is_empty() {
+        mods::remove_links(install, state_dir);
+    } else {
+        mods::link_mods(install, mod_ids, state_dir)?;
     }
     Ok(Launch {
         program,
@@ -281,6 +285,20 @@ mod tests {
             )
             .is_err()
         );
+        assert!(
+            install.game.join("@wpsbbpg").exists(),
+            "a refused launch leaves the links alone"
+        );
+        build_steam(
+            vec!["steam".into()],
+            &install,
+            &server,
+            &[],
+            None,
+            &[],
+            &state,
+        )
+        .unwrap();
         assert!(
             install.game.join("@wpsbbpg").symlink_metadata().is_err(),
             "no mods: links removed"
