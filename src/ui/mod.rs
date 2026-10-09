@@ -32,9 +32,12 @@ const LIST_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 /// The shortest gap between two fetches the user asks for.
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// Ping a visible server again after this long.
-const PING_AGAIN: Duration = Duration::from_secs(120);
+const PING_AGAIN: Duration = Duration::from_secs(5 * 60);
 /// While ping results keep arriving, re-sort or re-filter at most this often.
-const RESORT_EVERY: Duration = Duration::from_secs(1);
+const RESORT_EVERY: Duration = Duration::from_secs(4);
+/// A server pinged again only moves in a ping sort if its ping changed by more than this (ms),
+/// so ordinary jitter doesn't shuffle the list.
+const PING_JITTER: u32 = 30;
 
 pub enum Msg {
     List {
@@ -448,13 +451,17 @@ impl App {
                 };
                 let before = counts(self);
                 let live = self.live.entry(pong.addr.clone()).or_default();
+                let ping_moved = match (live.ping, pong.ping) {
+                    (Some(old), Some(new)) => old.abs_diff(new) > PING_JITTER,
+                    (old, new) => old != new,
+                };
                 live.ping = pong.ping;
                 if pong.info.is_some() {
                     live.info = pong.info;
                 }
                 live.at = Some(Instant::now());
                 let counts_changed = self.answer_matters() && counts(self) != before;
-                if self.ping_matters() || counts_changed {
+                if (self.ping_matters() && ping_moved) || counts_changed {
                     // Not straight away: rows moving under the pointer make the list unusable.
                     self.pending_resort = true;
                 }
