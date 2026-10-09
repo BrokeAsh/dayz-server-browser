@@ -17,7 +17,7 @@ use crate::mods::{LocalMods, ModState};
 use crate::overlay;
 use crate::secret::{self, Storage};
 use crate::server::{self, Filters, ModFilter, ModRef, Perspective, Server, SortBy, map_title};
-use crate::settings::{Settings, Source, State, data_dir};
+use crate::settings::{COLUMNS, Settings, Source, State, data_dir};
 use crate::steam::{self, Install};
 use crate::steam_api::{self, FileDetails};
 use crate::workshop;
@@ -819,26 +819,29 @@ impl App {
             Some((row, align))
         });
 
+        // The server name takes whatever room the other columns leave, so the table always fits.
+        let columns = self.state.columns;
         let mut builder = TableBuilder::new(ui)
             .striped(true)
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center))
             .column(Column::exact(22.0))
-            .column(Column::remainder().at_least(220.0).clip(true))
-            .column(Column::initial(110.0).at_least(70.0).clip(true))
-            .column(Column::exact(78.0))
-            .column(Column::exact(52.0))
-            .column(Column::exact(56.0))
-            .column(Column::exact(48.0))
-            .column(Column::exact(22.0));
+            .column(Column::remainder().at_least(NAME_MIN).clip(true));
+        for width in columns {
+            builder = builder.column(Column::exact(width).clip(true));
+        }
+        builder = builder.column(Column::exact(LOCK_WIDTH));
         if let Some((row, align)) = scroll_row {
             builder = builder.scroll_to_row(row, Some(align));
         }
         let state = &self.state;
+        // Where each header cell is, for the column dividers drawn after the table.
+        let mut cells: Vec<egui::Rect> = Vec::new();
         builder
             .header(24.0, |mut header| {
                 let mut head = |header: &mut egui_extras::TableRow, label: &str, by: SortBy| {
                     header.col(|ui| {
+                        cells.push(ui.max_rect());
                         let arrow = if state.sort == by {
                             if state.sort_descending {
                                 " ⏷"
@@ -867,7 +870,8 @@ impl App {
                 head(&mut header, "Ping", SortBy::Ping);
                 head(&mut header, "Mods", SortBy::Mods);
                 header.col(|ui| {
-                    ui.label(RichText::new("🔒").strong());
+                    let color = ui.visuals().strong_text_color();
+                    padlock(ui, color).on_hover_text("Needs a password");
                 });
             })
             .body(|body| {
@@ -950,7 +954,8 @@ impl App {
                     });
                     row.col(|ui| {
                         if s.password || info.is_some_and(|i| i.password) {
-                            ui.label("🔒");
+                            let color = ui.visuals().text_color();
+                            padlock(ui, color).on_hover_text("Needs a password");
                         }
                     });
                     let response = row.response();
@@ -961,6 +966,8 @@ impl App {
                     }
                 });
             });
+
+        self.column_dividers(ui, &cells);
 
         // Ping what's on screen (not too often).
         for addr in visible.iter().cloned() {
@@ -1282,6 +1289,15 @@ impl eframe::App for App {
         }
     }
 
+    fn on_exit(&mut self) {
+        // Keep a change made in the last moment before closing.
+        if self.state_changed.take().is_some()
+            && let Err(e) = self.state.save()
+        {
+            log::warn!("couldn't save the browser state: {e:#}");
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         egui::Panel::top("top").show(ui, |ui| {
@@ -1345,6 +1361,90 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_secs(5));
     }
 }
+
+impl App {
+    /// Draggable dividers in the list's header. Dragging the one after a column resizes it, and
+    /// the server name gives or takes the room; the one between the server name and the map moves
+    /// the map's left edge. Double-clicking one puts that column back to its first width.
+    fn column_dividers(&mut self, ui: &mut egui::Ui, cells: &[egui::Rect]) {
+        // Header cells: star, server name, then the five sized columns.
+        let (Some(name), true) = (cells.get(1), cells.len() == 7) else {
+            return;
+        };
+        let slack = name.width() - NAME_MIN;
+        let half_gap = ui.spacing().item_spacing.x / 2.0;
+        for (i, cell) in cells.iter().enumerate().skip(1) {
+            let x = cell.right() + half_gap;
+            let rect = egui::Rect::from_x_y_ranges(x - 4.0..=x + 4.0, cell.y_range());
+            let response = ui
+                .interact(
+                    rect,
+                    ui.id().with(("column divider", i)),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::ResizeColumn);
+            let stroke = if response.hovered() || response.dragged() {
+                ui.visuals().widgets.hovered.bg_stroke
+            } else {
+                ui.visuals().widgets.noninteractive.bg_stroke
+            };
+            ui.painter().vline(x, cell.y_range().shrink(3.0), stroke);
+            // The divider after the server name belongs to the map, on its left.
+            let (column, sign) = if i == 1 { (0, -1.0) } else { (i - 2, 1.0) };
+            let width = &mut self.state.columns[column];
+            if response.double_clicked() {
+                *width = COLUMNS[column];
+                self.state_changed();
+            } else if response.dragged() {
+                let grow = (response.drag_delta().x * sign).min(slack.max(0.0));
+                *width = (*width + grow).max(COLUMN_MIN);
+                self.state_changed();
+            }
+        }
+    }
+}
+
+/// A small padlock, drawn rather than taken from the emoji font, whose lock is hard to make out.
+fn padlock(ui: &mut egui::Ui, color: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(11.0, 14.0), Sense::hover());
+    let painter = ui.painter();
+    let body = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + 6.0),
+        rect.right_bottom(),
+    );
+    painter.rect_filled(body, 2.0, color);
+    // The shackle: an arch whose legs reach into the body.
+    let (center, radius) = (egui::pos2(rect.center().x, rect.top() + 4.5), 3.2);
+    let mut shackle = vec![egui::pos2(center.x - radius, body.top() + 1.0)];
+    shackle.extend((0..=12).map(|i| {
+        let angle = std::f32::consts::PI * i as f32 / 12.0;
+        egui::pos2(
+            center.x - radius * angle.cos(),
+            center.y - radius * angle.sin(),
+        )
+    }));
+    shackle.push(egui::pos2(center.x + radius, body.top() + 1.0));
+    painter.add(egui::Shape::line(shackle, egui::Stroke::new(1.6, color)));
+    let keyhole = ui.visuals().extreme_bg_color;
+    painter.circle_filled(
+        egui::pos2(body.center().x, body.center().y - 0.6),
+        1.3,
+        keyhole,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(body.center().x, body.center().y),
+            egui::pos2(body.center().x, body.center().y + 2.0),
+        ],
+        egui::Stroke::new(1.2, keyhole),
+    );
+    response
+}
+
+/// Narrowest the server name and the other list columns get.
+const NAME_MIN: f32 = 120.0;
+const COLUMN_MIN: f32 = 30.0;
+const LOCK_WIDTH: f32 = 20.0;
 
 fn ping_color(ping: u32) -> Color32 {
     match ping {

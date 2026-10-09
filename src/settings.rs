@@ -93,7 +93,12 @@ pub struct State {
     pub favorites: Vec<String>,
     /// Most recent first.
     pub recent: Vec<Recent>,
+    /// Widths of the list's Map, Players, Time, Ping, and Mods columns; the server name takes the
+    /// rest.
+    pub columns: [f32; 5],
 }
+
+pub const COLUMNS: [f32; 5] = [100.0, 80.0, 48.0, 44.0, 44.0];
 
 impl Default for State {
     fn default() -> Self {
@@ -103,6 +108,7 @@ impl Default for State {
             sort_descending: true,
             favorites: Vec::new(),
             recent: Vec::new(),
+            columns: COLUMNS,
         }
     }
 }
