@@ -77,6 +77,14 @@ struct ListStatus {
     last_request: Option<Instant>,
 }
 
+/// One entry in the map filter: the worlds sharing a display name, and how many servers run them.
+#[derive(Clone)]
+struct MapChoice {
+    key: String,
+    title: String,
+    servers: usize,
+}
+
 pub struct App {
     ctx: egui::Context,
     tx: mpsc::Sender<Msg>,
@@ -94,7 +102,10 @@ pub struct App {
     list: ListStatus,
     view: Vec<usize>,
     view_dirty: bool,
-    maps: Vec<(String, usize)>,
+    maps: Vec<MapChoice>,
+    /// The map filter's search text, and whether its list was open last frame.
+    map_query: String,
+    map_popup_open: bool,
     selected: Option<String>,
     /// Scroll the table to the selected server, placing it like this.
     scroll_to_selected: Option<Align>,
@@ -158,6 +169,8 @@ impl App {
             view: Vec::new(),
             view_dirty: true,
             maps: Vec::new(),
+            map_query: String::new(),
+            map_popup_open: false,
             selected: None,
             scroll_to_selected: None,
             on_screen: Vec::new(),
@@ -399,12 +412,20 @@ impl App {
             .enumerate()
             .map(|(i, s)| (s.addr(), i))
             .collect();
-        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut counts: HashMap<String, MapChoice> = HashMap::new();
         for s in &self.servers {
-            *counts.entry(s.map.clone()).or_default() += 1;
+            let key = server::map_key(&s.map);
+            counts
+                .entry(key.clone())
+                .or_insert_with(|| MapChoice {
+                    key,
+                    title: map_title(&s.map),
+                    servers: 0,
+                })
+                .servers += 1;
         }
-        let mut maps: Vec<(String, usize)> = counts.into_iter().collect();
-        maps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut maps: Vec<MapChoice> = counts.into_values().collect();
+        maps.sort_by(|a, b| b.servers.cmp(&a.servers).then_with(|| a.key.cmp(&b.key)));
         self.maps = maps;
         self.view_dirty = true;
         self.ping_sweep();
@@ -577,25 +598,91 @@ impl App {
         let f = &mut self.state.filters;
         ui.heading("Filters");
         ui.add_space(4.0);
-        let current = if f.map.is_empty() {
-            "Any map".to_string()
-        } else {
-            map_title(&f.map)
+        // Picked maps no server runs right now still show, with no servers.
+        let choice = |key: &String| {
+            self.maps
+                .iter()
+                .find(|c| c.key == *key)
+                .cloned()
+                .unwrap_or_else(|| MapChoice {
+                    key: key.clone(),
+                    title: map_title(key),
+                    servers: 0,
+                })
         };
-        egui::ComboBox::from_id_salt("map")
+        let current = match f.maps.as_slice() {
+            [] => "Any map".to_string(),
+            [map] => choice(map).title,
+            [map, rest @ ..] => format!("{} +{}", choice(map).title, rest.len()),
+        };
+        let popup = egui::ComboBox::from_id_salt("map")
             .selected_text(current)
             .width(170.0)
+            .height(400.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
-                changed |= ui
-                    .selectable_value(&mut f.map, String::new(), "Any map")
-                    .changed();
-                for (map, count) in self.maps.iter().take(80) {
-                    let label = format!("{} ({count})", map_title(map));
-                    changed |= ui
-                        .selectable_value(&mut f.map, map.clone(), label)
-                        .changed();
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut self.map_query)
+                        .hint_text("Type to search")
+                        .desired_width(f32::INFINITY),
+                );
+                if !self.map_popup_open {
+                    search.request_focus();
                 }
+                let query = self.map_query.trim().to_lowercase();
+                // Picked maps stay on top; the rest, busiest first, narrowed by the search.
+                let mut rows: Vec<MapChoice> = f.maps.iter().map(choice).collect();
+                rows.extend(
+                    self.maps
+                        .iter()
+                        .filter(|c| !f.maps.contains(&c.key) && c.key.contains(&query))
+                        .cloned(),
+                );
+                // Enter picks the first match that isn't picked yet.
+                if search.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && let Some(row) = rows.get(f.maps.len())
+                {
+                    f.maps.push(row.key.clone());
+                    self.map_query.clear();
+                    changed = true;
+                    search.request_focus();
+                }
+                if ui
+                    .add_enabled(!f.maps.is_empty(), egui::Button::new("Any map"))
+                    .clicked()
+                {
+                    f.maps.clear();
+                    changed = true;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        if rows.is_empty() {
+                            ui.label(RichText::new("No maps match").weak());
+                        }
+                        for row in rows {
+                            let mut on = f.maps.contains(&row.key);
+                            let label = format!("{} ({})", row.title, row.servers);
+                            if ui.checkbox(&mut on, label).changed() {
+                                if on {
+                                    f.maps.push(row.key);
+                                } else {
+                                    f.maps.retain(|m| *m != row.key);
+                                }
+                                changed = true;
+                            }
+                        }
+                    });
             });
+        let open = popup.inner.is_some();
+        if open && !self.map_popup_open {
+            // Fresh search each time it opens.
+            self.map_query.clear();
+        }
+        self.map_popup_open = open;
         ui.add_space(4.0);
         changed |= ui.checkbox(&mut f.hide_empty, "Hide empty").changed();
         changed |= ui.checkbox(&mut f.hide_full, "Hide full").changed();
@@ -1068,39 +1155,42 @@ impl App {
                 ui.label(RichText::new("None (vanilla)").weak());
             }
             Some(mods) => {
-                egui::ScrollArea::vertical().id_salt("mods").show(ui, |ui| {
-                    for m in &mods {
-                        ui.horizontal(|ui| {
-                            let (icon, color, tip) = state_badge(self.mod_state(m));
-                            ui.label(RichText::new(icon).color(color))
-                                .on_hover_text(tip);
-                            // Long names are cut to the panel's width rather than widening it;
-                            // dragging the panel wider shows more, and hovering shows all of it.
-                            let color = if m.id != 0 {
-                                ui.visuals().hyperlink_color
-                            } else {
-                                ui.visuals().text_color()
-                            };
-                            let name = ui.add(
-                                egui::Label::new(RichText::new(&m.name).color(color))
-                                    .truncate()
-                                    .sense(Sense::click()),
-                            );
-                            if m.id != 0 {
-                                if name.clicked() {
-                                    open_workshop(m.id);
+                egui::ScrollArea::vertical()
+                    .id_salt("mods")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for m in &mods {
+                            ui.horizontal(|ui| {
+                                let (icon, color, tip) = state_badge(self.mod_state(m));
+                                ui.label(RichText::new(icon).color(color))
+                                    .on_hover_text(tip);
+                                // Long names are cut to the panel's width rather than widening it;
+                                // dragging the panel wider shows more, and hovering shows all of it.
+                                let color = if m.id != 0 {
+                                    ui.visuals().hyperlink_color
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                let name = ui.add(
+                                    egui::Label::new(RichText::new(&m.name).color(color))
+                                        .truncate()
+                                        .sense(Sense::click()),
+                                );
+                                if m.id != 0 {
+                                    if name.clicked() {
+                                        open_workshop(m.id);
+                                    }
+                                    name.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text(format!(
+                                            "{}\nClick to open in the Steam Workshop",
+                                            m.name
+                                        ));
+                                } else {
+                                    name.on_hover_text(&m.name);
                                 }
-                                name.on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text(format!(
-                                        "{}\nClick to open in the Steam Workshop",
-                                        m.name
-                                    ));
-                            } else {
-                                name.on_hover_text(&m.name);
-                            }
-                        });
-                    }
-                });
+                            });
+                        }
+                    });
             }
             None if !loading => {
                 ui.label(RichText::new("Unknown until the server answers.").weak());
@@ -1204,7 +1294,9 @@ impl eframe::App for App {
             .resizable(false)
             .exact_size(210.0)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.filters_panel(ui));
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| self.filters_panel(ui));
             });
         egui::Panel::right("details")
             .resizable(true)

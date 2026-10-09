@@ -71,6 +71,12 @@ pub fn map_title(map: &str) -> String {
     }
 }
 
+/// What the map filter compares, so names for the same world (`enoch` and `Livonia`,
+/// `deerisle` and `DeerIsle`) count as one map.
+pub fn map_key(map: &str) -> String {
+    map_title(map).to_lowercase()
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Perspective {
     #[default]
@@ -91,8 +97,9 @@ pub enum ModFilter {
 #[serde(default)]
 pub struct Filters {
     pub search: String,
-    /// Lower-case world name, or empty for any.
-    pub map: String,
+    /// Maps by [`map_key`]; empty for any.
+    #[serde(alias = "map", deserialize_with = "one_or_many")]
+    pub maps: Vec<String>,
     pub hide_empty: bool,
     pub hide_full: bool,
     pub hide_password: bool,
@@ -103,12 +110,34 @@ pub struct Filters {
     pub favorites_only: bool,
 }
 
+/// Reads a list of maps, or the single world name (empty for any) that older versions saved.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let maps = match OneOrMany::deserialize(d)? {
+        OneOrMany::One(map) if map.is_empty() => Vec::new(),
+        OneOrMany::One(map) => vec![map],
+        OneOrMany::Many(maps) => maps,
+    };
+    let mut keys: Vec<String> = Vec::new();
+    for key in maps.iter().map(|m| map_key(m)) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
 impl Filters {
     pub fn matches(&self, s: &Server, ping: Option<u32>, favorite: bool) -> bool {
         if self.favorites_only && !favorite {
             return false;
         }
-        if !self.map.is_empty() && !s.map.eq_ignore_ascii_case(&self.map) {
+        if !self.maps.is_empty() && !self.maps.contains(&map_key(&s.map)) {
             return false;
         }
         if (self.hide_empty && s.players == 0)
@@ -230,6 +259,23 @@ mod tests {
         };
         assert!(!f.matches(&s, None, false));
         assert!(f.matches(&s, None, true));
+        f = Filters {
+            maps: vec!["chernarus".into(), "deer isle".into()],
+            ..Default::default()
+        };
+        assert!(f.matches(&s, None, false));
+        f.maps.remove(1);
+        assert!(!f.matches(&s, None, false));
+    }
+
+    #[test]
+    fn reads_old_map_filter() {
+        let f: Filters = serde_json::from_str(r#"{"map":"enoch"}"#).unwrap();
+        assert_eq!(f.maps, ["livonia"]);
+        let f: Filters = serde_json::from_str(r#"{"map":""}"#).unwrap();
+        assert!(f.maps.is_empty());
+        let f: Filters = serde_json::from_str(r#"{"maps":["livonia","enoch","Sakhal"]}"#).unwrap();
+        assert_eq!(f.maps, ["livonia", "sakhal"]);
     }
 
     #[test]
@@ -237,5 +283,7 @@ mod tests {
         assert_eq!(clean_name(" A\u{1}B\n "), "AB");
         assert_eq!(map_title("enoch"), "Livonia");
         assert_eq!(map_title("takistanplus"), "Takistanplus");
+        assert_eq!(map_key("enoch"), map_key("Livonia"));
+        assert_eq!(map_key("DeerIsle"), "deer isle");
     }
 }
