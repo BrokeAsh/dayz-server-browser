@@ -1,8 +1,11 @@
 //! Which Workshop mods are installed and current, from Steam's own records, and the short links
 //! Linux launches use for `-mod`.
 
-use anyhow::{Context, Result, bail};
+#[cfg(not(windows))]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use std::collections::HashMap;
+#[cfg(not(windows))]
 use std::path::Path;
 
 use crate::steam::Install;
@@ -98,11 +101,13 @@ impl LocalMods {
 }
 
 /// The record of the links this browser made in the game folder, so it only ever removes its own.
+#[cfg(not(windows))]
 const LINKS_FILE: &str = "mod-links.json";
 
 /// Makes a short link in the game folder for each mod (Steam on Linux hangs when launch arguments
 /// get long, and full Workshop paths are long) and returns the `-mod` entries in order. Links from
-/// earlier launches are removed first.
+/// earlier launches are removed first. (Linux only: Windows launches use full paths.)
+#[cfg(not(windows))]
 pub fn link_mods(install: &Install, ids: &[u64], state_dir: &Path) -> Result<Vec<String>> {
     remove_links(install, state_dir);
     let mut made: Vec<String> = Vec::new();
@@ -136,6 +141,7 @@ pub fn link_mods(install: &Install, ids: &[u64], state_dir: &Path) -> Result<Vec
 }
 
 /// Removes the links recorded by an earlier launch (only ones that are still links).
+#[cfg(not(windows))]
 pub fn remove_links(install: &Install, state_dir: &Path) {
     let Ok(text) = std::fs::read(state_dir.join(LINKS_FILE)) else {
         return;
@@ -154,6 +160,7 @@ pub fn remove_links(install: &Install, state_dir: &Path) {
 }
 
 /// `@w` and the id in base 36: short, and unlikely to match a real mod folder.
+#[cfg(not(windows))]
 pub fn link_name(id: u64) -> String {
     const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut n = id;
@@ -169,6 +176,7 @@ pub fn link_name(id: u64) -> String {
     format!("@w{}", String::from_utf8(digits).unwrap())
 }
 
+#[cfg(not(windows))]
 fn is_link_name(name: &str) -> bool {
     name.strip_prefix("@w")
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
@@ -177,11 +185,6 @@ fn is_link_name(name: &str) -> bool {
 #[cfg(unix)]
 fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
 }
 
 /// The full path of each mod, for launches that don't need short names (Windows).
@@ -221,6 +224,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn link_names_are_short_and_ours() {
         assert_eq!(link_name(0), "@w0");
         assert_eq!(link_name(35), "@wz");
