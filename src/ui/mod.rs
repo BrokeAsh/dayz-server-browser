@@ -96,7 +96,10 @@ pub struct App {
     view_dirty: bool,
     maps: Vec<(String, usize)>,
     selected: Option<String>,
-    scroll_to_selected: bool,
+    /// Scroll the table to the selected server, placing it like this.
+    scroll_to_selected: Option<Align>,
+    /// The servers on screen in the last frame, top to bottom.
+    on_screen: Vec<String>,
 
     pinger: Pinger,
     live: HashMap<String, Live>,
@@ -156,7 +159,8 @@ impl App {
             view_dirty: true,
             maps: Vec::new(),
             selected: None,
-            scroll_to_selected: false,
+            scroll_to_selected: None,
+            on_screen: Vec::new(),
             pinger,
             live: HashMap::new(),
             pinging: HashMap::new(),
@@ -683,7 +687,7 @@ impl App {
 
     fn select(&mut self, addr: &str, scroll: bool) {
         self.selected = Some(addr.to_string());
-        self.scroll_to_selected = scroll;
+        self.scroll_to_selected = scroll.then_some(Align::Center);
         if self.index.contains_key(addr) {
             self.request_rules(addr);
             let (mods, _) = self.mods_for(addr);
@@ -696,21 +700,37 @@ impl App {
 
     fn table(&mut self, ui: &mut egui::Ui) {
         if self.view_dirty {
+            // A re-sort or re-filter mustn't carry the selected server off screen: if it was on
+            // screen, keep it there at about the same height.
+            let keep = self.selected.as_ref().and_then(|selected| {
+                let at = self.on_screen.iter().position(|a| a == selected)?;
+                let height = at as f32 / self.on_screen.len().max(1) as f32;
+                Some(if height < 0.33 {
+                    Align::Min
+                } else if height > 0.66 {
+                    Align::Max
+                } else {
+                    Align::Center
+                })
+            });
             self.rebuild_view();
+            if keep.is_some() {
+                self.scroll_to_selected = keep;
+            }
         }
         let row_height = 22.0;
         let mut clicked: Option<(String, bool)> = None;
         let mut sort_clicked: Option<SortBy> = None;
         let mut favorite_clicked: Option<String> = None;
         let mut visible: Vec<String> = Vec::new();
-        let scroll_row = if self.scroll_to_selected {
-            self.selected
-                .as_ref()
-                .and_then(|a| self.view.iter().position(|&i| self.servers[i].addr() == *a))
-        } else {
-            None
-        };
-        self.scroll_to_selected = false;
+        let scroll_row = self.scroll_to_selected.take().and_then(|align| {
+            let selected = self.selected.as_ref()?;
+            let row = self
+                .view
+                .iter()
+                .position(|&i| self.servers[i].addr() == *selected)?;
+            Some((row, align))
+        });
 
         let mut builder = TableBuilder::new(ui)
             .striped(true)
@@ -724,8 +744,8 @@ impl App {
             .column(Column::exact(56.0))
             .column(Column::exact(48.0))
             .column(Column::exact(22.0));
-        if let Some(row) = scroll_row {
-            builder = builder.scroll_to_row(row, Some(Align::Center));
+        if let Some((row, align)) = scroll_row {
+            builder = builder.scroll_to_row(row, Some(align));
         }
         let state = &self.state;
         builder
@@ -856,7 +876,7 @@ impl App {
             });
 
         // Ping what's on screen (not too often).
-        for addr in visible {
+        for addr in visible.iter().cloned() {
             let stale = self
                 .live
                 .get(&addr)
@@ -868,6 +888,7 @@ impl App {
                 self.pinger.request(addr);
             }
         }
+        self.on_screen = visible;
         if let Some(by) = sort_clicked {
             if self.state.sort == by {
                 self.state.sort_descending = !self.state.sort_descending;
