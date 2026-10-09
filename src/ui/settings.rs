@@ -404,7 +404,7 @@ impl App {
         let mut forget = None;
         for addr in &self.state.added {
             ui.horizontal(|ui| {
-                match self.added.iter().find(|s| s.addr() == *addr) {
+                match self.index.get(addr).map(|&i| &self.servers[i]) {
                     Some(s) => ui.label(&s.name).on_hover_text(addr),
                     None => ui.label(RichText::new(format!("{addr} (didn't answer)")).weak()),
                 };

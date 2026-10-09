@@ -10,14 +10,19 @@ use crate::address;
 #[derive(Default)]
 pub struct ConnectWindow {
     text: String,
-    pub(super) busy: bool,
+    /// The address being looked up, while one is.
+    pub(super) asking: Option<String>,
     error: Option<String>,
     focused: bool,
 }
 
 impl ConnectWindow {
+    pub(super) fn busy(&self) -> bool {
+        self.asking.is_some()
+    }
+
     pub fn failed(&mut self, error: String) {
-        self.busy = false;
+        self.asking = None;
         self.error = Some(error);
     }
 }
@@ -38,7 +43,7 @@ impl App {
                 ui.label("Server address");
                 ui.horizontal(|ui| {
                     let edit = ui.add_enabled(
-                        !window.busy,
+                        !window.busy(),
                         egui::TextEdit::singleline(&mut window.text)
                             .hint_text("203.0.113.5:2302")
                             .desired_width(240.0),
@@ -49,11 +54,11 @@ impl App {
                     }
                     let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let button = ui.add_enabled(
-                        !window.busy && !window.text.trim().is_empty(),
+                        !window.busy() && !window.text.trim().is_empty(),
                         egui::Button::new("Connect"),
                     );
-                    go = (enter || button.clicked()) && !window.busy;
-                    if window.busy {
+                    go = (enter || button.clicked()) && !window.busy();
+                    if window.busy() {
                         ui.spinner();
                     }
                 });
@@ -78,7 +83,7 @@ impl App {
                 self.open_join(&addr);
                 return;
             }
-            window.busy = true;
+            window.asking = Some(text.clone());
             self.spawn(move || Msg::Found {
                 result: address::parse(&text)
                     .and_then(|(ip, port)| address::find(ip, port))

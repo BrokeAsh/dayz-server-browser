@@ -132,7 +132,8 @@ pub struct App {
     looking_up: Option<String>,
     lookup_failed: Option<(String, String)>,
     /// When DayZ was last launched.
-    last_launch: Option<Instant>,
+    /// When DayZ was last launched, and with which mods.
+    last_launch: Option<(Instant, Vec<u64>)>,
     index: HashMap<String, usize>,
     list: ListStatus,
     view: Vec<usize>,
@@ -572,7 +573,12 @@ impl App {
     /// A server looked up by address answered (or didn't).
     fn found(&mut self, asked: &str, result: Result<Found, String>, mut then: Then) {
         // The Connect window was closed (or is on another address) meanwhile: just add it.
-        if then == Then::Join && !self.connect_window.as_ref().is_some_and(|w| w.busy) {
+        if then == Then::Join
+            && !self
+                .connect_window
+                .as_ref()
+                .is_some_and(|w| w.asking.as_deref() == Some(asked))
+        {
             then = Then::Keep;
         }
         if then == Then::Show && self.looking_up.as_deref() == Some(asked) {
@@ -785,17 +791,12 @@ impl App {
     }
 
     /// The mods to use for a server: what the server itself just said, else the list's.
-    fn mods_for(&self, addr: &str) -> (Option<Vec<ModRef>>, &'static str) {
-        match self.rules.get(addr) {
+    fn mods_for(&self, server: &Server) -> (Option<Vec<ModRef>>, &'static str) {
+        match self.rules.get(&server.addr()) {
             Some(Fetch::Done(rules)) => (Some(rules.mods.clone()), "from the server"),
-            _ => {
-                let server = self.index.get(addr).map(|&i| &self.servers[i]);
-                match server {
-                    Some(s) if !s.mods.is_empty() => (Some(s.mods.clone()), "from the DZSA list"),
-                    Some(s) if !s.modded => (Some(Vec::new()), "vanilla"),
-                    _ => (None, ""),
-                }
-            }
+            _ if !server.mods.is_empty() => (Some(server.mods.clone()), "from the DZSA list"),
+            _ if !server.modded => (Some(Vec::new()), "vanilla"),
+            _ => (None, ""),
         }
     }
 
@@ -1054,9 +1055,9 @@ impl App {
         if scroll {
             self.scroll_to_selected = Some(Align::Center);
         }
-        if self.index.contains_key(addr) {
+        if let Some(&i) = self.index.get(addr) {
             self.request_rules(addr);
-            let (mods, _) = self.mods_for(addr);
+            let (mods, _) = self.mods_for(&self.servers[i]);
             if let Some(mods) = mods {
                 let ids: Vec<u64> = mods.iter().map(|m| m.id).collect();
                 self.request_details(&ids);
@@ -1452,7 +1453,7 @@ impl App {
             });
 
         ui.add_space(10.0);
-        let (mods, origin) = self.mods_for(&addr);
+        let (mods, origin) = self.mods_for(&s);
         let loading = matches!(self.rules.get(&addr), Some(Fetch::Loading));
         ui.horizontal(|ui| {
             let count = mods.as_ref().map_or(0, Vec::len);

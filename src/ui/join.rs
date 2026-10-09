@@ -25,10 +25,10 @@ const FRESH: Duration = Duration::from_secs(3);
 /// Silent this long while waiting counts as a restart.
 const RESTARTING: Duration = Duration::from_secs(5);
 /// After the Workshop helper exits, Steam may still count DayZ as running for a moment and
-/// ignore a launch; an automatic one waits this long.
+/// ignore a launch; launching waits this long.
 const SETTLE: Duration = Duration::from_secs(5);
-/// A launch soon after another, before the game shows up, could pull the first one's mod links
-/// from under it.
+/// A launch with other mods soon after another, before the game shows up, could pull the first
+/// one's mod links from under it.
 const RELAUNCH_GAP: Duration = Duration::from_secs(45);
 
 pub struct Join {
@@ -180,6 +180,14 @@ impl Join {
 
     fn downloading(&self) -> bool {
         self.run.as_ref().is_some_and(|r| !r.finished())
+    }
+
+    /// The helper exited moments ago, so Steam may still ignore a launch.
+    fn settling(&self) -> bool {
+        self.run
+            .as_ref()
+            .and_then(|r| r.finished_at)
+            .is_some_and(|t| t.elapsed() < SETTLE)
     }
 }
 
@@ -359,7 +367,7 @@ impl App {
         let seen = self.seen(&server);
         let live = self.live.get(addr);
         let info = live.and_then(|l| l.info.as_ref());
-        let (mods, origin) = self.mods_for(addr);
+        let (mods, origin) = self.mods_for(&server);
         let rules = self.rules.get(addr);
         let states: Vec<(ModRef, ModState)> = mods
             .iter()
@@ -420,6 +428,8 @@ impl App {
             format!("{} mods to download first", view.missing)
         } else if join.downloading() {
             "Downloads are still running".into()
+        } else if join.settling() {
+            "Steam is finishing the downloads…".into()
         } else if join.game_running {
             "DayZ is already running".into()
         } else {
@@ -455,13 +465,8 @@ impl App {
             return None;
         }
         let mods_known = view.rules_done || (view.rules_failed && join.rules_retried);
-        let settled = join
-            .run
-            .as_ref()
-            .and_then(|r| r.finished_at)
-            .is_none_or(|t| t.elapsed() > SETTLE);
         let password_ok = !view.locked || !join.password.is_empty();
-        (view.room() && ready && mods_known && settled && password_ok)
+        (view.room() && ready && mods_known && password_ok)
             .then(|| Action::Launch(view.workshop_ids()))
     }
 
@@ -564,8 +569,12 @@ impl App {
     }
 
     fn launch(&mut self, view: &View, ids: &[u64]) -> anyhow::Result<()> {
-        if self.last_launch.is_some_and(|t| t.elapsed() < RELAUNCH_GAP) && !launch::game_running() {
-            anyhow::bail!("DayZ is still starting from the last launch; give it a moment");
+        let other_mods =
+            |(at, last): &(Instant, Vec<u64>)| at.elapsed() < RELAUNCH_GAP && last != ids;
+        if self.last_launch.as_ref().is_some_and(other_mods) && !launch::game_running() {
+            anyhow::bail!(
+                "DayZ is still starting from the last launch, with other mods; give it a moment"
+            );
         }
         let install = self.install.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
         let extra = launch::parse_extra(&self.settings.extra_args)?;
@@ -587,7 +596,7 @@ impl App {
             self.check_overlay(true);
         }
         plan.spawn()?;
-        self.last_launch = Some(Instant::now());
+        self.last_launch = Some((Instant::now(), ids.to_vec()));
         let joined = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
