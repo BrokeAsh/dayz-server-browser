@@ -36,8 +36,6 @@ pub struct Settings {
     pub extra_args: String,
     /// Run the DayZ map overlay alongside the game.
     pub overlay: bool,
-    /// The overlay program; found on `PATH` (or in `~/.local/bin`) when unset.
-    pub overlay_program: Option<PathBuf>,
     /// The DayZ folder; found through Steam when unset.
     pub game_dir: Option<PathBuf>,
 }
@@ -48,7 +46,6 @@ impl Default for Settings {
             source: Source::Dzsa,
             extra_args: String::new(),
             overlay: true,
-            overlay_program: None,
             game_dir: None,
         }
     }

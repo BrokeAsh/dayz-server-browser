@@ -22,7 +22,6 @@ pub struct SettingsWindow {
     extra_args: String,
     game_dir: String,
     game_message: Option<String>,
-    overlay_program: String,
     hotkey: String,
     capturing: bool,
     hotkey_message: Option<(String, bool)>,
@@ -41,7 +40,6 @@ impl SettingsWindow {
             extra_args: settings.extra_args.clone(),
             game_dir: shown(settings.game_dir.as_ref()),
             game_message: None,
-            overlay_program: shown(settings.overlay_program.as_ref()),
             hotkey: overlay::hotkey(),
             capturing: false,
             hotkey_message: None,
@@ -288,34 +286,15 @@ impl App {
         {
             self.check_overlay(true);
         }
-        match overlay::program(&self.settings) {
-            Some(path) => {
-                ui.label(RichText::new(path.display().to_string()).weak().small());
-            }
-            None => {
-                ui.label(
-                    RichText::new("The overlay (dayz-map) isn't installed or wasn't found.")
-                        .color(ERROR),
-                );
-            }
-        }
-        ui.horizontal(|ui| {
-            ui.label("Program");
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut window.overlay_program)
-                    .hint_text("found automatically")
-                    .desired_width(240.0),
+        if overlay::program().is_none() {
+            ui.label(
+                RichText::new(
+                    "The overlay (dayz-map) is missing from the browser's folder; reinstall the \
+                     browser to get it back.",
+                )
+                .color(ERROR),
             );
-            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Use").clicked() || enter {
-                let text = window.overlay_program.trim();
-                let program = (!text.is_empty()).then(|| PathBuf::from(text));
-                if program != self.settings.overlay_program {
-                    self.settings.overlay_program = program;
-                    self.check_overlay(true);
-                }
-            }
-        });
+        }
         let mut new_hotkey = None;
         ui.horizontal(|ui| {
             ui.label("Hotkey in game");
@@ -376,7 +355,7 @@ impl App {
         }
         window.hotkey = name;
         window.hotkey_message = Some(("Saved".into(), false));
-        let Some(program) = overlay::program(&self.settings) else {
+        let Some(program) = overlay::program() else {
             return;
         };
         self.spawn(move || {

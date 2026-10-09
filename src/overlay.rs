@@ -1,14 +1,14 @@
-//! The DayZ map overlay (`dayz-map`), a separate program: started in the background while the
-//! browser runs, and given its hotkey through its own config file. It's driven only through its
-//! command line, so the two stay independent.
+//! The DayZ map overlay (`dayz-map`): built from the `overlay` submodule and shipped next to the
+//! browser, but still its own program. It's started in the background while the browser runs,
+//! given its hotkey through its own config file, and driven only through its command line, so
+//! the two stay independent.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::settings::{Settings, write_atomic};
-use crate::steam::which;
+use crate::settings::write_atomic;
 
 const EXE: &str = if cfg!(windows) {
     "dayz-map.exe"
@@ -16,23 +16,11 @@ const EXE: &str = if cfg!(windows) {
     "dayz-map"
 };
 
-/// The overlay program: the one set in the settings, else on `PATH`, else `~/.local/bin` (where
-/// its README installs it), else next to this program.
-pub fn program(settings: &Settings) -> Option<PathBuf> {
-    if let Some(path) = &settings.overlay_program {
-        return path.is_file().then(|| path.clone());
-    }
-    if let Some(path) = which(EXE) {
-        return Some(path);
-    }
-    let home_bin = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin").join(EXE));
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join(EXE)));
-    [home_bin, beside]
-        .into_iter()
-        .flatten()
-        .find(|p| p.is_file())
+/// The overlay program, which ships next to this one (as `cargo build` also leaves it).
+pub fn program() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.join(EXE);
+    path.is_file().then_some(path)
 }
 
 fn quiet(program: &Path) -> Command {

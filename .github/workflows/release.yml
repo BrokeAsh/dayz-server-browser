@@ -2,7 +2,8 @@ name: Release
 
 # Push a tag like v0.1.0 (matching Cargo.toml's version) to build Linux and Windows downloads and
 # publish them as a GitHub release, with that version's CHANGELOG.md section as the notes. Each
-# download includes Valve's Steamworks library for the Workshop helper (it isn't in the repo).
+# download includes the map overlay (built from the submodule) and Valve's Steamworks library for
+# the Workshop helper (it isn't in the repo).
 on:
   push:
     tags: ["v*"]
@@ -21,6 +22,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libdbus-1-dev pkg-config
       - run: cargo test --workspace --release
@@ -31,7 +34,7 @@ jobs:
         run: |
           name="dayz-browser-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir "$name"
-          cp target/release/dayz-browser target/release/dayz-browser-workshop "$name/"
+          cp target/release/dayz-browser target/release/dayz-browser-workshop target/release/dayz-map "$name/"
           cp "$(find target/release/build -path '*steamworks-sys-*/out/libsteam_api.so' | head -1)" "$name/"
           cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$name/"
           tar czf "$name.tar.gz" "$name"
@@ -44,6 +47,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace --release
       - run: cargo build --workspace --release
@@ -55,7 +60,7 @@ jobs:
         run: |
           $name = "dayz-browser-$env:GITHUB_REF_NAME-windows-x86_64"
           New-Item -ItemType Directory $name | Out-Null
-          Copy-Item target/release/dayz-browser.exe, target/release/dayz-browser-workshop.exe $name
+          Copy-Item target/release/dayz-browser.exe, target/release/dayz-browser-workshop.exe, target/release/dayz-map.exe $name
           $dll = Get-ChildItem -Recurse target/release/build -Filter steam_api64.dll | Select-Object -First 1
           Copy-Item $dll.FullName $name
           Copy-Item README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE $name

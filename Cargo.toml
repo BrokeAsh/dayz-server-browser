@@ -1,13 +1,14 @@
 [workspace]
-members = [".", "workshop"]
-default-members = [".", "workshop"]
+# The map overlay comes in as a git submodule (its own repo), built and shipped with the browser.
+members = [".", "workshop", "overlay"]
+default-members = [".", "workshop", "overlay"]
 
 [package]
 name = "dayz-browser"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-description = "DayZ server browser and launcher that works with the DayZ map overlay"
+description = "DayZ server browser and launcher, with the DayZ map overlay built in"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -35,4 +36,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
 strip = true

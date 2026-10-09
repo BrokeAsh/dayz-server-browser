@@ -143,7 +143,8 @@ pub fn steam_command() -> Result<Vec<String>> {
 }
 
 /// The first `name` on `PATH`.
-pub fn which(name: &str) -> Option<PathBuf> {
+#[cfg(not(windows))]
+fn which(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())

@@ -378,7 +378,7 @@ impl App {
             self.overlay = OverlayStatus::Off;
             return;
         }
-        let Some(program) = overlay::program(&self.settings) else {
+        let Some(program) = overlay::program() else {
             self.overlay = OverlayStatus::NotFound;
             return;
         };
@@ -1564,7 +1564,7 @@ impl App {
                 let (text, color) = match &self.overlay {
                     OverlayStatus::Off => ("Map overlay off".to_string(), None),
                     OverlayStatus::Checking => ("Map overlay: starting…".into(), None),
-                    OverlayStatus::NotFound => ("Map overlay not installed".into(), Some(WARN)),
+                    OverlayStatus::NotFound => ("Map overlay missing".into(), Some(WARN)),
                     OverlayStatus::Running => ("Map overlay ready".into(), Some(GOOD)),
                     OverlayStatus::Failed(e) => (format!("Map overlay: {e}"), Some(ERROR)),
                 };

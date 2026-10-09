@@ -1,8 +1,8 @@
 # DayZ Server Browser
 
-A DayZ server browser and launcher for Linux and Windows, written in Rust. It works alongside the
-[DayZ map overlay](https://github.com/BrokeAsh/dayz-map-overlay): while the browser is open, the
-overlay runs in the background, ready for the game.
+A DayZ server browser and launcher for Linux and Windows, written in Rust. It comes with the
+[DayZ map overlay](https://github.com/BrokeAsh/dayz-map-overlay) built in: while the browser is
+open, the overlay runs in the background, ready for the game.
 
 - Lists every server DZSA Launcher knows (about 10,000), with search and filters (maps, empty,
   full, locked, first or third person, vanilla or modded, players, server size, ping, game
@@ -75,6 +75,11 @@ Extra launch arguments (Settings) are added to every launch.
 
 ### The map overlay
 
+The overlay ships with the browser: its repository is included here as a git submodule
+(`overlay/`), and it's built and packaged with the browser, so there's nothing else to install.
+It's still its own program (`dayz-map`, next to `dayz-browser`), and its repository still has its
+own releases for anyone who wants only the overlay.
+
 With the overlay on (the default), the browser starts `dayz-map run` in the background if it isn't
 running yet. The overlay keeps working if you close the browser, and it still finds the map by
 itself if you join a server some other way. The overlay's in-game hotkey can be changed in the
@@ -82,13 +87,19 @@ browser's settings; the browser writes it to the overlay's config and restarts t
 
 ## Build
 
-Needs Rust 1.95 or newer.
+Needs Rust 1.95 or newer. The overlay comes in as a submodule, so clone with it:
 
 ```sh
+git clone --recurse-submodules <this repository>
+# or, in an existing clone:
+git submodule update --init
+
 cargo build --release
 ```
 
-This builds `target/release/dayz-browser` and the helper `target/release/dayz-browser-workshop`.
+This builds `target/release/dayz-browser`, the helper `target/release/dayz-browser-workshop`, and
+the overlay `target/release/dayz-map`. To move to a newer overlay, check out a newer commit in
+`overlay/` and commit the change here.
 The helper needs Valve's Steamworks library next to it (`libsteam_api.so` on Linux,
 `steam_api64.dll` on Windows). The build puts a copy under `target/release/build/steamworks-sys-*/out/`;
 release downloads include it. Valve's library isn't part of this repository.

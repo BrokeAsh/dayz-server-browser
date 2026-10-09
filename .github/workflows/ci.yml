@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -30,6 +32,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -42,6 +46,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@1.95
       - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libdbus-1-dev pkg-config
       - uses: Swatinem/rust-cache@v2

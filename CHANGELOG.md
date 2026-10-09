@@ -13,3 +13,5 @@
   launches once it has a free slot and nobody queued, checking its mods again after a restart.
 - Calmer list: servers are pinged again every 5 minutes, the list re-sorts at most every few
   seconds, and a ping sort ignores small ping changes.
+- The map overlay is built in: it comes from the overlay's repository as a git submodule and ships
+  next to the browser, so it no longer has to be installed or found separately.
