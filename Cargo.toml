@@ -1,0 +1,38 @@
+[workspace]
+members = [".", "workshop"]
+default-members = [".", "workshop"]
+
+[package]
+name = "dayz-browser"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "DayZ server browser and launcher that works with the DayZ map overlay"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+directories = "6.0.0"
+eframe = "0.36"
+egui_extras = "0.36"
+env_logger = "0.11.11"
+log = "0.4.34"
+open = "5.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+shlex = "2.0"
+toml = "1.1.6"
+toml_edit = "0.25"
+ureq = { version = "3.4", features = ["gzip", "brotli", "json"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+[profile.release]
+lto = "thin"
+strip = true

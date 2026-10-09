@@ -1,0 +1,153 @@
+//! The browser's settings (`config.toml`) and what it remembers between runs (`state.json`:
+//! filters, favorites, recent servers).
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+use crate::server::{Filters, SortBy};
+
+pub fn dirs() -> directories::ProjectDirs {
+    directories::ProjectDirs::from("", "", "dayz-browser").expect("home directory is known")
+}
+
+pub fn config_dir() -> PathBuf {
+    dirs().config_dir().to_path_buf()
+}
+
+pub fn data_dir() -> PathBuf {
+    dirs().data_dir().to_path_buf()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// DZSA Launcher's public list.
+    #[default]
+    Dzsa,
+    /// Steam's list, with the user's own Web API key.
+    Steam,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub source: Source,
+    /// Added to every launch, written as on a command line (quotes allowed).
+    pub extra_args: String,
+    /// Run the DayZ map overlay alongside the game.
+    pub overlay: bool,
+    /// The overlay program; found on `PATH` (or in `~/.local/bin`) when unset.
+    pub overlay_program: Option<PathBuf>,
+    /// The DayZ folder; found through Steam when unset.
+    pub game_dir: Option<PathBuf>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            source: Source::Dzsa,
+            extra_args: String::new(),
+            overlay: true,
+            overlay_program: None,
+            game_dir: None,
+        }
+    }
+}
+
+impl Settings {
+    pub fn load() -> Self {
+        let path = config_dir().join("config.toml");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
+                log::warn!("{} is unreadable ({e}); using defaults", path.display());
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        write_atomic(
+            &config_dir().join("config.toml"),
+            toml::to_string_pretty(self)?.as_bytes(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recent {
+    pub addr: String,
+    pub name: String,
+    pub map: String,
+    /// Unix time it was joined.
+    pub joined: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct State {
+    pub filters: Filters,
+    pub sort: SortBy,
+    pub sort_descending: bool,
+    /// `ip:query_port` of each favorite.
+    pub favorites: Vec<String>,
+    /// Most recent first.
+    pub recent: Vec<Recent>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            filters: Filters::default(),
+            sort: SortBy::Players,
+            sort_descending: true,
+            favorites: Vec::new(),
+            recent: Vec::new(),
+        }
+    }
+}
+
+impl State {
+    pub fn load() -> Self {
+        std::fs::read(data_dir().join("state.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        write_atomic(
+            &data_dir().join("state.json"),
+            &serde_json::to_vec_pretty(self)?,
+        )
+    }
+
+    pub fn is_favorite(&self, addr: &str) -> bool {
+        self.favorites.iter().any(|f| f == addr)
+    }
+
+    pub fn toggle_favorite(&mut self, addr: &str) {
+        if let Some(i) = self.favorites.iter().position(|f| f == addr) {
+            self.favorites.remove(i);
+        } else {
+            self.favorites.push(addr.to_string());
+        }
+    }
+
+    pub fn add_recent(&mut self, recent: Recent) {
+        self.recent.retain(|r| r.addr != recent.addr);
+        self.recent.insert(0, recent);
+        self.recent.truncate(20);
+    }
+}
+
+/// Writes through a temporary file, so a crash can't leave half a file.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}

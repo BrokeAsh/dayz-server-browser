@@ -1,0 +1,12 @@
+[package]
+name = "dayz-browser-workshop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Helper for dayz-browser: downloads DayZ Workshop mods through the Steam client"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde_json = "1.0.151"
+steamworks = "0.13"
