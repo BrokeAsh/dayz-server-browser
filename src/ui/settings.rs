@@ -100,46 +100,49 @@ impl App {
                     .small(),
                 );
 
-                ui.add_space(6.0);
-                ui.label(RichText::new("Steam Web API key").strong());
-                match &self.key {
-                    Some((_, storage)) => {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Saved in {}", storage.describe()));
-                            if ui.button("Remove").clicked() {
-                                remove_key = true;
+                // The key only matters for Steam's list.
+                if self.settings.source == Source::Steam {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Steam Web API key").strong());
+                    match &self.key {
+                        Some((_, storage)) => {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Saved in {}", storage.describe()));
+                                if ui.button("Remove").clicked() {
+                                    remove_key = true;
+                                }
+                            });
+                        }
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut window.key_input)
+                                        .password(true)
+                                        .hint_text("32 letters and digits")
+                                        .desired_width(260.0),
+                                );
+                                let enabled = !window.key_busy && !window.key_input.trim().is_empty();
+                                if ui.add_enabled(enabled, egui::Button::new("Test and save")).clicked() {
+                                    test_key = Some(window.key_input.trim().to_string());
+                                }
+                                if window.key_busy {
+                                    ui.spinner();
+                                }
+                            });
+                            if ui.link("Get a key from Steam").clicked() {
+                                let _ = open::that_detached("https://steamcommunity.com/dev/apikey");
                             }
-                        });
-                    }
-                    None => {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut window.key_input)
-                                    .password(true)
-                                    .hint_text("32 letters and digits")
-                                    .desired_width(260.0),
-                            );
-                            let enabled = !window.key_busy && !window.key_input.trim().is_empty();
-                            if ui.add_enabled(enabled, egui::Button::new("Test and save")).clicked() {
-                                test_key = Some(window.key_input.trim().to_string());
-                            }
-                            if window.key_busy {
-                                ui.spinner();
-                            }
-                        });
-                        if ui.link("Get a key from Steam").clicked() {
-                            let _ = open::that_detached("https://steamcommunity.com/dev/apikey");
                         }
                     }
+                    if let Some((message, error)) = &window.key_message {
+                        ui.label(if *error { RichText::new(message).color(RED) } else { RichText::new(message) });
+                    }
+                    ui.label(
+                        RichText::new("Kept in your system keyring, never in the settings file. Don't share it.")
+                            .weak()
+                            .small(),
+                    );
                 }
-                if let Some((message, error)) = &window.key_message {
-                    ui.label(if *error { RichText::new(message).color(RED) } else { RichText::new(message) });
-                }
-                ui.label(
-                    RichText::new("Kept in your system keyring, never in the settings file. Don't share it.")
-                        .weak()
-                        .small(),
-                );
 
                 ui.separator();
                 ui.heading("Launching");
