@@ -346,13 +346,20 @@ impl App {
             }
             Msg::Pong(pong) => {
                 self.pinging.remove(&pong.addr);
-                let live = self.live.entry(pong.addr).or_default();
+                let before = self.players_of(&pong.addr);
+                let live = self.live.entry(pong.addr.clone()).or_default();
                 live.ping = pong.ping;
                 if pong.info.is_some() {
                     live.info = pong.info;
                 }
                 live.at = Some(Instant::now());
-                if self.ping_matters() {
+                let players_changed = self.players_matter()
+                    && self.players_of(&pong.addr)
+                        != before.or_else(|| {
+                            let s = &self.servers[*self.index.get(&pong.addr)?];
+                            Some((s.players, s.max_players))
+                        });
+                if self.ping_matters() || players_changed {
                     // Not straight away: rows moving under the pointer make the list unusable.
                     self.pending_resort = true;
                 }
@@ -436,6 +443,19 @@ impl App {
         self.state.filters.max_ping > 0 || self.state.sort == SortBy::Ping
     }
 
+    /// Whether the list's order or filtering depends on servers' player counts, which pings
+    /// update.
+    fn players_matter(&self) -> bool {
+        let f = &self.state.filters;
+        self.state.sort == SortBy::Players
+            || f.hide_empty
+            || f.hide_full
+            || f.min_players > 0
+            || f.max_players > 0
+            || f.min_slots > 0
+            || f.max_slots > 0
+    }
+
     /// When sorting or filtering by ping, pings every server that passes the other filters (in
     /// the background, behind the ones on screen), so the order covers the whole list.
     fn ping_sweep(&mut self) {
@@ -454,7 +474,7 @@ impl App {
                 || !self
                     .state
                     .filters
-                    .matches(s, None, self.state.is_favorite(&addr))
+                    .matches(s, None, None, self.state.is_favorite(&addr))
             {
                 continue;
             }
@@ -506,6 +526,12 @@ impl App {
         self.live.get(addr).and_then(|l| l.ping)
     }
 
+    /// Players and slots, from the server's latest answer.
+    fn players_of(&self, addr: &str) -> Option<(u32, u32)> {
+        let info = self.live.get(addr)?.info.as_ref()?;
+        Some((info.players, info.max_players))
+    }
+
     fn rebuild_view(&mut self) {
         let filters = &self.state.filters;
         let mut view: Vec<usize> = self
@@ -514,16 +540,22 @@ impl App {
             .enumerate()
             .filter(|(_, s)| {
                 let addr = s.addr();
-                filters.matches(s, self.ping_of(&addr), self.state.is_favorite(&addr))
+                filters.matches(
+                    s,
+                    self.ping_of(&addr),
+                    self.players_of(&addr),
+                    self.state.is_favorite(&addr),
+                )
             })
             .map(|(i, _)| i)
             .collect();
         let by = self.state.sort;
         let ping = |s: &Server| self.ping_of(&s.addr());
+        let players = |s: &Server| self.players_of(&s.addr()).map_or(s.players, |(p, _)| p);
         let favorite = |s: &Server| self.state.is_favorite(&s.addr());
         view.sort_by(|&a, &b| {
             let (a, b) = (&self.servers[a], &self.servers[b]);
-            let order = server::compare(by, a, b, ping, favorite);
+            let order = server::compare(by, a, b, ping, players, favorite);
             let order = if self.state.sort_descending && by != SortBy::Favorite {
                 order.reverse()
             } else {
@@ -716,23 +748,33 @@ impl App {
                 .changed();
         });
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Max ping");
-            changed |= ui
-                .add(
-                    egui::DragValue::new(&mut f.max_ping)
-                        .range(0..=999)
-                        .speed(5)
-                        .custom_formatter(|v, _| {
-                            if v == 0.0 {
-                                "any".into()
-                            } else {
-                                format!("{v:.0} ms")
-                            }
-                        }),
-                )
-                .changed();
-        });
+        egui::Grid::new("limits")
+            .num_columns(2)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Players");
+                changed |= range(ui, &mut f.min_players, &mut f.max_players);
+                ui.end_row();
+                ui.label("Server size");
+                changed |= range(ui, &mut f.min_slots, &mut f.max_slots);
+                ui.end_row();
+                ui.label("Max ping");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut f.max_ping)
+                            .range(0..=999)
+                            .speed(5)
+                            .custom_formatter(|v, _| {
+                                if v == 0.0 {
+                                    "any".into()
+                                } else {
+                                    format!("{v:.0} ms")
+                                }
+                            }),
+                    )
+                    .changed();
+                ui.end_row();
+            });
         ui.add_space(6.0);
         if ui.button("Reset filters").clicked() {
             *f = Filters {
@@ -1402,6 +1444,43 @@ impl App {
             }
         }
     }
+}
+
+/// A "from … to …" pair of limits, where 0 means no limit. Moving one past the other moves both.
+fn range(ui: &mut egui::Ui, min: &mut u32, max: &mut u32) -> bool {
+    let any = |v: f64, _| {
+        if v == 0.0 {
+            "any".to_string()
+        } else {
+            format!("{v:.0}")
+        }
+    };
+    let max_was_any = *max == 0;
+    ui.horizontal(|ui| {
+        let low = ui.add(
+            egui::DragValue::new(min)
+                .range(0..=500)
+                .speed(0.5)
+                .custom_formatter(any),
+        );
+        ui.label("to");
+        let high = ui.add(
+            egui::DragValue::new(max)
+                .range(0..=500)
+                .speed(0.5)
+                .custom_formatter(any),
+        );
+        if *max != 0 && *min > *max {
+            // A maximum that was "any" starts from the minimum.
+            if low.changed() || max_was_any {
+                *max = *min;
+            } else {
+                *min = *max;
+            }
+        }
+        low.changed() || high.changed()
+    })
+    .inner
 }
 
 /// A small padlock, drawn rather than taken from the emoji font, whose lock is hard to make out.

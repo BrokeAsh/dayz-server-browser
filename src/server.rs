@@ -40,10 +40,6 @@ impl Server {
     pub fn addr(&self) -> String {
         format!("{}:{}", self.ip, self.query_port)
     }
-
-    pub fn is_full(&self) -> bool {
-        self.max_players > 0 && self.players >= self.max_players
-    }
 }
 
 /// Server names are free text; drop control characters and trim.
@@ -108,6 +104,11 @@ pub struct Filters {
     /// Hide servers slower than this (ms); 0 for no limit. Servers not pinged yet stay visible.
     pub max_ping: u32,
     pub favorites_only: bool,
+    /// Limits on players online and on server size (slots); 0 for no limit.
+    pub min_players: u32,
+    pub max_players: u32,
+    pub min_slots: u32,
+    pub max_slots: u32,
 }
 
 /// Reads a list of maps, or the single world name (empty for any) that older versions saved.
@@ -133,16 +134,31 @@ fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D:
 }
 
 impl Filters {
-    pub fn matches(&self, s: &Server, ping: Option<u32>, favorite: bool) -> bool {
+    /// `players` is the server's own answer when pinged (players, slots), which is newer than the
+    /// list's.
+    pub fn matches(
+        &self,
+        s: &Server,
+        ping: Option<u32>,
+        players: Option<(u32, u32)>,
+        favorite: bool,
+    ) -> bool {
+        let (players, slots) = players.unwrap_or((s.players, s.max_players));
         if self.favorites_only && !favorite {
             return false;
         }
         if !self.maps.is_empty() && !self.maps.contains(&map_key(&s.map)) {
             return false;
         }
-        if (self.hide_empty && s.players == 0)
-            || (self.hide_full && s.is_full())
+        if (self.hide_empty && players == 0)
+            || (self.hide_full && slots > 0 && players >= slots)
             || (self.hide_password && s.password)
+        {
+            return false;
+        }
+        let within = |n: u32, min: u32, max: u32| n >= min && (max == 0 || n <= max);
+        if !within(players, self.min_players, self.max_players)
+            || !within(slots, self.min_slots, self.max_slots)
         {
             return false;
         }
@@ -193,13 +209,14 @@ pub fn compare(
     a: &Server,
     b: &Server,
     ping: impl Fn(&Server) -> Option<u32>,
+    players: impl Fn(&Server) -> u32,
     favorite: impl Fn(&Server) -> bool,
 ) -> Ordering {
     match by {
         SortBy::Favorite => favorite(b).cmp(&favorite(a)),
         SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         SortBy::Map => map_title(&a.map).cmp(&map_title(&b.map)),
-        SortBy::Players => a.players.cmp(&b.players),
+        SortBy::Players => players(a).cmp(&players(b)),
         SortBy::Time => a.time.cmp(&b.time),
         SortBy::Ping => match (ping(a), ping(b)) {
             (Some(x), Some(y)) => x.cmp(&y),
@@ -237,35 +254,64 @@ mod tests {
     fn filters() {
         let s = server();
         let mut f = Filters::default();
-        assert!(f.matches(&s, None, false));
+        assert!(f.matches(&s, None, None, false));
         f.search = "framework".into();
-        assert!(f.matches(&s, None, false));
+        assert!(f.matches(&s, None, None, false));
         f.search = "namalsk".into();
-        assert!(!f.matches(&s, None, false));
+        assert!(!f.matches(&s, None, None, false));
         f = Filters {
             mods: ModFilter::Vanilla,
             ..Default::default()
         };
-        assert!(!f.matches(&s, None, false));
+        assert!(!f.matches(&s, None, None, false));
         f = Filters {
             max_ping: 50,
             ..Default::default()
         };
-        assert!(f.matches(&s, None, false), "not pinged yet: keep it");
-        assert!(!f.matches(&s, Some(80), false));
+        assert!(f.matches(&s, None, None, false), "not pinged yet: keep it");
+        assert!(!f.matches(&s, Some(80), None, false));
         f = Filters {
             favorites_only: true,
             ..Default::default()
         };
-        assert!(!f.matches(&s, None, false));
-        assert!(f.matches(&s, None, true));
+        assert!(!f.matches(&s, None, None, false));
+        assert!(f.matches(&s, None, None, true));
+        // 10 players on a 60-slot server.
+        for (min_players, max_players, min_slots, max_slots, keep) in [
+            (10, 10, 60, 60, true),
+            (11, 0, 0, 0, false),
+            (0, 9, 0, 0, false),
+            (0, 0, 61, 0, false),
+            (0, 0, 0, 59, false),
+            (5, 20, 50, 100, true),
+        ] {
+            f = Filters {
+                min_players,
+                max_players,
+                min_slots,
+                max_slots,
+                ..Default::default()
+            };
+            assert_eq!(f.matches(&s, None, None, false), keep, "{f:?}");
+        }
+        // The server's own answer wins over the list.
+        f = Filters {
+            min_players: 11,
+            ..Default::default()
+        };
+        assert!(f.matches(&s, None, Some((12, 60)), false));
+        f = Filters {
+            hide_full: true,
+            ..Default::default()
+        };
+        assert!(!f.matches(&s, None, Some((60, 60)), false));
         f = Filters {
             maps: vec!["chernarus".into(), "deer isle".into()],
             ..Default::default()
         };
-        assert!(f.matches(&s, None, false));
+        assert!(f.matches(&s, None, None, false));
         f.maps.remove(1);
-        assert!(!f.matches(&s, None, false));
+        assert!(!f.matches(&s, None, None, false));
     }
 
     #[test]
