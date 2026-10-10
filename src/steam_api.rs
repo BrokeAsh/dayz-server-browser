@@ -190,6 +190,8 @@ pub fn test_key(key: &str) -> Result<()> {
 pub struct FileDetails {
     /// Unix time of the last update.
     pub time_updated: u64,
+    /// The download's size in bytes, when Steam says.
+    pub size: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +211,19 @@ struct DetailsItem {
     publishedfileid: String,
     result: i32,
     time_updated: u64,
+    #[serde(deserialize_with = "lenient_size")]
+    file_size: Option<u64>,
+}
+
+/// Steam sends `file_size` as a string of digits (`"123456"`), though a number is accepted too.
+/// Anything else, or zero, counts as unknown rather than failing the whole response.
+fn lenient_size<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .filter(|&size| size > 0))
 }
 
 /// Details for Workshop items (no key needed). Items Steam doesn't return are left out.
@@ -235,6 +250,7 @@ pub fn file_details(ids: &[u64]) -> Result<HashMap<u64, FileDetails>> {
                 id,
                 FileDetails {
                     time_updated: item.time_updated,
+                    size: item.file_size,
                 },
             );
         }
@@ -285,6 +301,24 @@ mod tests {
         assert_eq!(s.map, "chernarusplus");
         assert!(s.first_person && s.modded && s.battleye);
         assert_eq!(s.time.as_deref(), Some("08:15"));
+    }
+
+    #[test]
+    fn file_size_as_string_or_number() {
+        let body = r#"{"response":{"result":1,"resultcount":4,"publishedfiledetails":[
+            {"publishedfileid":"1559212036","result":1,"file_size":"3240000000","time_updated":1700000000},
+            {"publishedfileid":"1564026768","result":1,"file_size":52000000},
+            {"publishedfileid":"2116157322","result":1,"file_size":"lots"},
+            {"publishedfileid":"2545327648","result":9}
+        ]}}"#;
+        let items = serde_json::from_str::<DetailsResponse>(body)
+            .unwrap()
+            .response
+            .publishedfiledetails;
+        let sizes: Vec<Option<u64>> = items.iter().map(|i| i.file_size).collect();
+        assert_eq!(sizes, [Some(3_240_000_000), Some(52_000_000), None, None]);
+        assert_eq!(items[0].time_updated, 1_700_000_000);
+        assert_eq!(items[3].result, 9);
     }
 
     #[test]

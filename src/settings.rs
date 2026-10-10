@@ -42,6 +42,18 @@ pub struct Settings {
     pub check_updates: bool,
     /// Show the server being played in Discord (when the browser has a Discord application).
     pub discord_presence: bool,
+    /// The name to play under (`-name=`); empty leaves it to DayZ.
+    pub name: String,
+    /// `-nosplash -skipIntro`.
+    pub skip_intro: bool,
+    /// `-noPause`: keep running when the game loses focus.
+    pub no_pause: bool,
+    /// `-window`.
+    pub windowed: bool,
+    /// `-world=empty`: a plain main menu, which loads faster.
+    pub empty_world: bool,
+    /// `-cpuCount=`, when set.
+    pub cpu_count: Option<u32>,
 }
 
 impl Default for Settings {
@@ -53,6 +65,12 @@ impl Default for Settings {
             game_dir: None,
             check_updates: true,
             discord_presence: true,
+            name: String::new(),
+            skip_intro: false,
+            no_pause: false,
+            windowed: false,
+            empty_world: false,
+            cpu_count: None,
         }
     }
 }
@@ -220,6 +238,30 @@ fn set_aside(path: &Path, error: &dyn std::fmt::Display) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_settings_load_and_save() {
+        // From before the launch options: they're off.
+        let old: Settings =
+            toml::from_str("source = \"dzsa\"\nextra_args = \"-nosplash\"\noverlay = false\n")
+                .unwrap();
+        assert_eq!(old.extra_args, "-nosplash");
+        assert!(!old.overlay);
+        assert_eq!(old.name, "");
+        assert!(!old.skip_intro && !old.no_pause && !old.windowed && !old.empty_world);
+        assert_eq!(old.cpu_count, None);
+        // No cores set leaves the key out, and it all comes back.
+        let text = toml::to_string_pretty(&Settings::default()).unwrap();
+        assert!(!text.contains("cpu_count"));
+        let set = Settings {
+            name: "Survivor One".into(),
+            skip_intro: true,
+            cpu_count: Some(6),
+            ..Default::default()
+        };
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&set).unwrap()).unwrap();
+        assert_eq!(back, set);
+    }
 
     #[test]
     fn reads_older_column_widths() {

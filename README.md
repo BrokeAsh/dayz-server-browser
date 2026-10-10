@@ -85,6 +85,13 @@ shows DayZ as running, so the helper exits as soon as the downloads finish. If i
 **Open Workshop pages** opens each mod's page in Steam to subscribe yourself; the join window
 notices when Steam has downloaded them.
 
+The join window adds up the size of the mods to download or update (from the Workshop's details;
+an update counts in full, since Steam downloads the whole new version before replacing the old
+one) and checks the free space on the drive with the Steam library. If the downloads wouldn't
+leave a tenth of their size spare (at least 1 GB), it says how much is needed and how much is
+free, and won't download them or wait to join until there's room. When sizes aren't known, it
+says so and doesn't stop you.
+
 ### Launching
 
 - **Linux:** `steam -applaunch 221100 -nolauncher -connect=<ip>:<port>:<query port> -mod=...`.
@@ -94,7 +101,18 @@ notices when Steam has downloaded them.
 - **Windows:** `DayZ_BE.exe 0 1 1 -exe DayZ_x64.exe -mod=<full paths> -connect=...`, the way the
   official launcher starts the game.
 
-Extra launch arguments (Settings) are added to every launch.
+Settings has the common launch options, added to every launch:
+
+- **Name in game** (`-name=`), if set. Quotes, backslashes, backticks, and `$ ; & | < >` are left
+  out, since they could break the command line on the way to the game.
+- **Skip the intro and splash screens** (`-nosplash -skipIntro`), **Keep running in the
+  background** (`-noPause`), **Windowed** (`-window`), **Empty main menu** (`-world=empty`, loads
+  faster), and **CPU cores** (`-cpuCount=`, off by default).
+
+Anything else goes in **Extra launch arguments**, written as on a command line. Settings shows
+the arguments a launch adds, and flags extra arguments that repeat the options or the ones the
+browser sets itself (`-connect`, `-mod`, `-password`, `-port`). On Linux, the options count
+towards Steam's limit of about 1,000 characters.
 
 ### News
 

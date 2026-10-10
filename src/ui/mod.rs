@@ -16,6 +16,7 @@ mod filters;
 mod join;
 mod list;
 mod news;
+mod prejoin;
 mod settings;
 mod updates;
 
