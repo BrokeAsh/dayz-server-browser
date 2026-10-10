@@ -26,6 +26,13 @@ pub struct Server {
     pub mods: Vec<ModRef>,
     /// Whether the server runs mods; true when `mods` isn't empty or the server says so.
     pub modded: bool,
+    /// One of the game's own servers (DZSA's `public` shard; elsewhere, by the server's tags).
+    pub official: bool,
+    /// How many times faster than real time the in-game day and night run, when known.
+    pub day_speed: Option<f32>,
+    pub night_speed: Option<f32>,
+    /// Where the server is, as an upper-case ISO 3166 code (`DE`), once looked up.
+    pub country: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -89,6 +96,24 @@ pub enum ModFilter {
     Modded,
 }
 
+/// The game's own servers, or everyone else's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Kind {
+    #[default]
+    Any,
+    Official,
+    Community,
+}
+
+/// Day is 06:00 to 17:59 in-game, night the rest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Daytime {
+    #[default]
+    Any,
+    Day,
+    Night,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Filters {
@@ -111,6 +136,24 @@ pub struct Filters {
     pub max_slots: u32,
     /// Hide servers known to run a different version of the game than the one installed.
     pub hide_other_versions: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub kind: Kind,
+    pub battleye_only: bool,
+    /// By the server's in-game time; servers whose time isn't known are hidden while it's set.
+    #[serde(deserialize_with = "lenient")]
+    pub daytime: Daytime,
+    /// Hide servers less than 30% full.
+    pub hide_low_population: bool,
+    /// Countries by upper-case ISO code; empty for any. Servers whose country isn't known yet
+    /// stay visible.
+    #[serde(deserialize_with = "country_codes")]
+    pub countries: Vec<String>,
+    /// Limits on how many times faster than real time the in-game day runs; 0 for no limit.
+    pub min_speed: u32,
+    pub max_speed: u32,
+    /// Show the servers that look fake or are listed twice, which are hidden by default (except
+    /// the user's own: see [`Seen::suspect`]).
+    pub show_suspect: bool,
 }
 
 /// What's known about a server beyond the list: its latest answer to a ping, and the user's own
@@ -130,6 +173,103 @@ pub struct Seen {
     pub same_version: Option<bool>,
     /// The user's note on it; empty if none.
     pub note: String,
+    /// From the answer's tags: BattlEye, and how fast time runs by day.
+    pub battleye: Option<bool>,
+    pub day_speed: Option<f32>,
+    /// Looks fake or is a second listing (see `suspect`), and isn't a server the user keeps
+    /// (a favorite, a recent one, or one added by address), which always show.
+    pub suspect: bool,
+}
+
+/// A value of the wrong kind (such as a choice a newer version saved) reads as the default,
+/// rather than losing the whole state.
+fn lenient<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// Reads country codes, keeping the two-letter ones, upper case and once each.
+fn country_codes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let codes: Vec<serde_json::Value> = lenient(d)?;
+    let mut kept: Vec<String> = Vec::new();
+    for code in codes.iter().filter_map(|c| c.as_str()) {
+        let code = code.trim().to_ascii_uppercase();
+        if code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()) && !kept.contains(&code)
+        {
+            kept.push(code);
+        }
+    }
+    Ok(kept)
+}
+
+/// Whether an in-game time (`HH:MM`) is day (06:00 to 17:59); `None` if it isn't a time.
+pub fn is_day(time: &str) -> Option<bool> {
+    let (hours, minutes) = time.trim().split_once(':')?;
+    let hours: u32 = hours.parse().ok()?;
+    let minutes: u32 = minutes.parse().ok()?;
+    (hours < 24 && minutes < 60).then_some((6..18).contains(&hours))
+}
+
+/// Whether a server is less than 30% full. Servers without a slot count can't say.
+pub fn low_population(players: u32, slots: u32) -> bool {
+    slots > 0 && u64::from(players) * 10 < u64::from(slots) * 3
+}
+
+impl Filters {
+    /// The filters in the "More filters" section.
+    fn matches_more(&self, s: &Server, seen: &Seen) -> bool {
+        let (players, slots) = seen.players.unwrap_or((s.players, s.max_players));
+        match self.kind {
+            Kind::Official if !s.official => return false,
+            Kind::Community if s.official => return false,
+            _ => {}
+        }
+        if (self.battleye_only && !seen.battleye.unwrap_or(s.battleye))
+            || (self.hide_low_population && low_population(players, slots))
+            || (!self.show_suspect && seen.suspect)
+        {
+            return false;
+        }
+        if self.daytime != Daytime::Any {
+            let day = seen.time.as_deref().or(s.time.as_deref()).and_then(is_day);
+            if day != Some(self.daytime == Daytime::Day) {
+                return false;
+            }
+        }
+        if !self.countries.is_empty()
+            && s.country
+                .as_ref()
+                .is_some_and(|c| !self.countries.contains(c))
+        {
+            return false;
+        }
+        if self.min_speed > 0 || self.max_speed > 0 {
+            // Within a whisker, so 4.000001 counts as 4.
+            let Some(speed) = seen.day_speed.or(s.day_speed) else {
+                return false;
+            };
+            if speed < self.min_speed as f32 - 0.01
+                || (self.max_speed > 0 && speed > self.max_speed as f32 + 0.01)
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Whether a search matches a server's country: its code exactly, or (from three letters on,
+/// so "us" doesn't match Belarus) part of its name.
+fn country_hit(s: &Server, needle: &str) -> bool {
+    s.country.as_deref().is_some_and(|code| {
+        code.eq_ignore_ascii_case(needle)
+            || (needle.chars().count() >= 3
+                && crate::geo::name(code).is_some_and(|n| n.to_lowercase().contains(needle)))
+    })
 }
 
 /// Reads a list of maps, or the single world name (empty for any) that older versions saved.
@@ -190,6 +330,9 @@ impl Filters {
         if self.max_ping > 0 && seen.ping.is_some_and(|p| p > self.max_ping) {
             return false;
         }
+        if !self.matches_more(s, seen) {
+            return false;
+        }
         let search = self.search.trim();
         if !search.is_empty() {
             let needle = search.to_lowercase();
@@ -202,7 +345,8 @@ impl Filters {
                 || s.mods
                     .iter()
                     .any(|m| m.name.to_lowercase().contains(&needle))
-                || seen.note.to_lowercase().contains(&needle);
+                || seen.note.to_lowercase().contains(&needle)
+                || country_hit(s, &needle);
             if !hit {
                 return false;
             }
@@ -221,6 +365,7 @@ pub enum SortBy {
     Time,
     Ping,
     Mods,
+    Country,
 }
 
 /// Compares two servers by a column, smallest first. Unknown pings compare as greater, so the
@@ -247,6 +392,10 @@ pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Orderi
         },
         // Servers whose mods aren't listed (Steam's list) still sort after vanilla ones.
         SortBy::Mods => (a.modded, a.mods.len()).cmp(&(b.modded, b.mods.len())),
+        // By code, A to Z, with servers whose country isn't known after the rest.
+        SortBy::Country => {
+            (a.country.is_none(), &a.country).cmp(&(b.country.is_none(), &b.country))
+        }
     }
 }
 
@@ -386,6 +535,172 @@ mod tests {
             ..Default::default()
         };
         assert!(!f.matches(&s, &other));
+    }
+
+    #[test]
+    fn more_filters() {
+        let mut s = server();
+        s.time = Some("17:59".into());
+        s.country = Some("DE".into());
+        s.day_speed = Some(4.0);
+        s.battleye = true;
+        let none = Seen::default();
+        let keeps = |f: &Filters, s: &Server, seen: &Seen| f.matches(s, seen);
+        let f = Filters::default();
+        assert!(keeps(&f, &s, &none));
+
+        let kind = |kind| Filters {
+            kind,
+            ..Default::default()
+        };
+        assert!(keeps(&kind(Kind::Community), &s, &none));
+        assert!(!keeps(&kind(Kind::Official), &s, &none));
+        s.official = true;
+        assert!(keeps(&kind(Kind::Official), &s, &none));
+        assert!(!keeps(&kind(Kind::Community), &s, &none));
+
+        // 17:59 is still day; the answer's time wins over the list's.
+        let day = |daytime| Filters {
+            daytime,
+            ..Default::default()
+        };
+        assert!(keeps(&day(Daytime::Day), &s, &none));
+        assert!(!keeps(&day(Daytime::Night), &s, &none));
+        let night = Seen {
+            time: Some("18:00".into()),
+            ..Default::default()
+        };
+        assert!(keeps(&day(Daytime::Night), &s, &night));
+        assert!(!keeps(&day(Daytime::Day), &s, &night));
+        let mut no_time = s.clone();
+        no_time.time = None;
+        assert!(!keeps(&day(Daytime::Day), &no_time, &none), "unknown time");
+        assert!(keeps(&day(Daytime::Any), &no_time, &none));
+
+        let battleye = Filters {
+            battleye_only: true,
+            ..Default::default()
+        };
+        assert!(keeps(&battleye, &s, &none));
+        let off = Seen {
+            battleye: Some(false),
+            ..Default::default()
+        };
+        assert!(!keeps(&battleye, &s, &off), "the answer's tags win");
+
+        // 10 of 60 is under 30%; 18 of 60 isn't.
+        let low = Filters {
+            hide_low_population: true,
+            ..Default::default()
+        };
+        assert!(!keeps(&low, &s, &none));
+        let busier = Seen {
+            players: Some((18, 60)),
+            ..Default::default()
+        };
+        assert!(keeps(&low, &s, &busier));
+        assert!(low_population(0, 10) && low_population(29, 100) && !low_population(30, 100));
+        assert!(!low_population(0, 0), "no slot count: can't say");
+
+        let countries = |codes: &[&str]| Filters {
+            countries: codes.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(keeps(&countries(&["FR", "DE"]), &s, &none));
+        assert!(!keeps(&countries(&["FR"]), &s, &none));
+        let mut unknown = s.clone();
+        unknown.country = None;
+        assert!(
+            keeps(&countries(&["FR"]), &unknown, &none),
+            "not known yet: keep it"
+        );
+
+        let speed = |min_speed, max_speed| Filters {
+            min_speed,
+            max_speed,
+            ..Default::default()
+        };
+        assert!(keeps(&speed(4, 4), &s, &none));
+        assert!(keeps(&speed(1, 0), &s, &none));
+        assert!(!keeps(&speed(5, 0), &s, &none));
+        assert!(!keeps(&speed(0, 3), &s, &none));
+        let fast = Seen {
+            day_speed: Some(12.0),
+            ..Default::default()
+        };
+        assert!(keeps(&speed(10, 0), &s, &fast), "the answer's speed wins");
+        let mut no_speed = s.clone();
+        no_speed.day_speed = None;
+        assert!(!keeps(&speed(1, 0), &no_speed, &none));
+
+        let suspect = Seen {
+            suspect: true,
+            ..Default::default()
+        };
+        assert!(!keeps(&f, &s, &suspect), "hidden by default");
+        let show = Filters {
+            show_suspect: true,
+            ..Default::default()
+        };
+        assert!(keeps(&show, &s, &suspect));
+    }
+
+    #[test]
+    fn searches_countries() {
+        let mut s = server();
+        s.country = Some("DE".into());
+        let search = |text: &str| Filters {
+            search: text.into(),
+            ..Default::default()
+        };
+        assert!(search("de").matches(&s, &Seen::default()));
+        assert!(search("germ").matches(&s, &Seen::default()));
+        assert!(search("Germany").matches(&s, &Seen::default()));
+        assert!(!search("france").matches(&s, &Seen::default()));
+        s.country = Some("BY".into());
+        assert!(
+            !search("us").matches(&s, &Seen::default()),
+            "not a part of Belarus"
+        );
+        s.country = None;
+        assert!(!search("germany").matches(&s, &Seen::default()));
+    }
+
+    #[test]
+    fn days_and_nights() {
+        for (time, day) in [
+            ("06:00", Some(true)),
+            ("17:59", Some(true)),
+            ("18:00", Some(false)),
+            ("05:59", Some(false)),
+            ("00:00", Some(false)),
+            ("12:30", Some(true)),
+            ("24:00", None),
+            ("12:60", None),
+            ("noon", None),
+            ("", None),
+        ] {
+            assert_eq!(is_day(time), day, "{time}");
+        }
+    }
+
+    #[test]
+    fn sorts_by_country() {
+        let mut a = server();
+        let mut b = server();
+        a.country = Some("DE".into());
+        b.country = Some("AT".into());
+        let none = Seen::default();
+        assert_eq!(
+            compare(SortBy::Country, &a, &none, &b, &none),
+            Ordering::Greater
+        );
+        b.country = None;
+        assert_eq!(
+            compare(SortBy::Country, &a, &none, &b, &none),
+            Ordering::Less,
+            "unknown after the rest"
+        );
     }
 
     #[test]

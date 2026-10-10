@@ -88,6 +88,11 @@ struct Entry {
     time: Option<String>,
     #[serde(deserialize_with = "lenient")]
     version: Option<String>,
+    /// `public` for the game's own servers, `private` for the rest.
+    #[serde(deserialize_with = "lenient")]
+    shard: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    time_acceleration: Option<f32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -150,10 +155,13 @@ fn parse(body: &[u8]) -> Result<Vec<Server>> {
         .result
         .context("DZSA answered without a server list; try again later")?;
     // One entry at a time, so a single odd one doesn't lose the whole list.
+    let mut addrs = std::collections::HashSet::new();
     let servers: Vec<Server> = entries
         .into_iter()
         .filter_map(|v| serde_json::from_value::<Entry>(v).ok())
         .filter_map(convert)
+        // DZSA lists a few servers twice, address and all: they're one server, shown once.
+        .filter(|s| addrs.insert(s.addr()))
         .collect();
     if servers.is_empty() {
         bail!("DZSA sent an empty server list; try again later");
@@ -190,6 +198,12 @@ fn convert(e: Entry) -> Option<Server> {
         queue: None,
         modded: !mods.is_empty(),
         mods,
+        // The game's own servers are DZSA's "public" shard; "Official" in a name means nothing.
+        official: e.shard.as_deref() == Some("public"),
+        // A whole number (5 for 5.4), and 0 for speeds under 1, which reads as unknown.
+        day_speed: e.time_acceleration.filter(|s| s.is_finite() && *s > 0.0),
+        night_speed: None,
+        country: None,
     })
 }
 
@@ -227,6 +241,35 @@ mod tests {
             1,
             "nulls don't lose the server or its mods"
         );
+    }
+
+    #[test]
+    fn reads_official_servers_and_time_speed() {
+        let body = br#"{"result":[
+            {"name":"4220 | EUROPE - DE","shard":"public","timeAcceleration":4,
+             "endpoint":{"ip":"203.0.113.20","port":27016}},
+            {"name":"Official Community Server","shard":"private","timeAcceleration":0,
+             "endpoint":{"ip":"203.0.113.21","port":27016}},
+            {"name":"Same address again","shard":"public",
+             "endpoint":{"ip":"203.0.113.21","port":27016}},
+            {"name":"Odd","shard":7,"timeAcceleration":"fast",
+             "endpoint":{"ip":"203.0.113.22","port":27016}}
+        ]}"#;
+        let servers = parse(body).unwrap();
+        assert_eq!(servers.len(), 3, "a server listed twice shows once");
+        assert!(servers[0].official);
+        assert_eq!(servers[0].day_speed, Some(4.0));
+        assert!(
+            !servers[1].official,
+            "a name saying Official doesn't make it one"
+        );
+        assert_eq!(
+            servers[1].name, "Official Community Server",
+            "the first listing stays"
+        );
+        assert_eq!(servers[1].day_speed, None, "0 reads as unknown");
+        assert!(!servers[2].official);
+        assert_eq!(servers[2].day_speed, None);
     }
 
     #[test]

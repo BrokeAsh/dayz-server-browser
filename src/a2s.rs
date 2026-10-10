@@ -41,6 +41,34 @@ pub struct Tags {
     pub modded: bool,
     pub queue: Option<u32>,
     pub time: Option<String>,
+    /// A community server (`external`), and one with its own characters (`privHive`). The
+    /// game's official servers have neither.
+    pub external: bool,
+    pub private_hive: bool,
+    /// How many times faster than real time the in-game day runs (`etm`, the server's
+    /// `serverTimeAcceleration`), and the factor nights run faster still (`entm`,
+    /// `serverNightTimeAcceleration`).
+    pub day_speed: Option<f32>,
+    pub night_factor: Option<f32>,
+}
+
+impl Tags {
+    /// One of the game's own servers: they run BattlEye and aren't marked as community ones. An
+    /// answer without tags isn't taken for one.
+    pub fn official(&self) -> bool {
+        self.battleye && !self.external && !self.private_hive
+    }
+
+    /// How many times faster than real time nights run, when both speeds are known.
+    pub fn night_speed(&self) -> Option<f32> {
+        Some(self.day_speed? * self.night_factor?)
+    }
+}
+
+/// A time speed from a tag such as `etm4.000000`; odd values read as unknown.
+fn speed(text: &str) -> Option<f32> {
+    let speed: f32 = text.trim().parse().ok()?;
+    (speed.is_finite() && speed > 0.0 && speed <= 1000.0).then_some(speed)
 }
 
 pub fn parse_tags(keywords: &str) -> Tags {
@@ -50,9 +78,15 @@ pub fn parse_tags(keywords: &str) -> Tags {
             "battleye" => tags.battleye = true,
             "no3rd" => tags.first_person = true,
             "mod" => tags.modded = true,
+            "external" => tags.external = true,
+            "privHive" => tags.private_hive = true,
             _ => {
                 if let Some(n) = tag.strip_prefix("lqs").and_then(|n| n.parse().ok()) {
                     tags.queue = Some(n);
+                } else if let Some(etm) = tag.strip_prefix("etm") {
+                    tags.day_speed = speed(etm);
+                } else if let Some(entm) = tag.strip_prefix("entm") {
+                    tags.night_factor = speed(entm);
                 } else if tag.len() == 5
                     && tag.as_bytes()[2] == b':'
                     && tag
@@ -645,7 +679,39 @@ mod tests {
                 modded: true,
                 queue: Some(4),
                 time: Some("17:30".into()),
+                ..Default::default()
             }
         );
+        assert!(tags.official(), "BattlEye, and not a community server");
+    }
+
+    #[test]
+    fn reads_community_and_time_speed_tags() {
+        // As real servers send them: an official one, then a community one.
+        let official = parse_tags("battleye,no3rd,shard001,lqs0,etm5.400000,entm2.170000,16:33");
+        assert!(official.official());
+        assert_eq!(official.day_speed, Some(5.4));
+        assert_eq!(official.night_factor, Some(2.17));
+        assert!((official.night_speed().unwrap() - 11.718).abs() < 0.001);
+        assert_eq!(official.time.as_deref(), Some("16:33"));
+        let community = parse_tags(
+            "battleye,external,privHive,shard123ABC,lqs2,etm12.000000,entm48.000000,mod,04:41",
+        );
+        assert!(!community.official());
+        assert!(community.external && community.private_hive && community.modded);
+        assert_eq!(community.queue, Some(2));
+        assert_eq!(community.night_speed(), Some(576.0));
+        // Odd or missing values read as unknown, without losing the other tags.
+        let odd = parse_tags("battleye,etm,entmfast,etmNaN,lqs999,12:00");
+        assert_eq!((odd.day_speed, odd.night_factor), (None, None));
+        assert_eq!(odd.night_speed(), None);
+        assert_eq!(odd.queue, Some(999));
+        let day_only = parse_tags("etm2.5");
+        assert_eq!(
+            (day_only.day_speed, day_only.night_speed()),
+            (Some(2.5), None)
+        );
+        assert!(!parse_tags("").official(), "no tags: unknown, not official");
+        assert!(!parse_tags("battleye,privHive").official());
     }
 }

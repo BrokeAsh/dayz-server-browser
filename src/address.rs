@@ -107,7 +107,7 @@ pub(crate) fn found(ip: IpAddr, query_port: u16, info: Info, took: Duration) -> 
         query_port,
         players: info.players,
         max_players: info.max_players,
-        time: tags.time,
+        time: tags.time.clone(),
         version: info.version.clone(),
         password: info.password,
         first_person: tags.first_person,
@@ -115,6 +115,10 @@ pub(crate) fn found(ip: IpAddr, query_port: u16, info: Info, took: Duration) -> 
         queue: tags.queue,
         mods: Vec::new(),
         modded: tags.modded,
+        official: tags.official(),
+        day_speed: tags.day_speed,
+        night_speed: tags.night_speed(),
+        country: None,
     };
     Found {
         server,

@@ -6,7 +6,9 @@ open, the overlay runs in the background, ready for the game.
 
 - Lists every server DZSA Launcher knows (about 10,000), with search and filters (maps, empty,
   full, locked, first or third person, vanilla or modded, players, server size, ping, game
-  version, favorites).
+  version, favorites). **More filters** adds country, official or community, in-game day or
+  night, time speed, BattlEye, and low population (under 30% full).
+- Shows each server's country, and hides likely fakes and servers listed twice (see below).
 - Pings the servers on screen and shows live players, queue, and in-game time.
 - Warns about servers on a different version of DayZ than yours, which the game can't join.
 - Asks the selected server for its mod list and shows which mods you have, which need an update,
@@ -106,6 +108,22 @@ keeps answers it gets anyway), for two weeks. The details panel charts the last 
 When a server stops answering for a few minutes, or its in-game clock is set back, that counts as
 a restart; once those fall at the same times of day on several days, the panel says when it usually
 restarts (in your local time). Nothing is recorded while the browser is closed.
+### Countries, official servers, and likely fakes
+
+- **Country** comes from the server's IP address, looked up in [DB-IP](https://db-ip.com)'s free
+  country database. The browser downloads it (about 4 MB) into its data folder the first time and
+  again once it's a month old, in the background; until it's there, servers just have no country.
+  Search matches countries too (`de`, `germany`).
+- **Official** servers are the game's own: DZSA's "public" shard, or, on Steam's list, servers
+  without the community tags. A name with "Official" in it doesn't count.
+- **Time speed** is how many times faster than real time the server's day runs (and its night,
+  once the server has answered). Day is 06:00 to 17:59 in-game.
+- **Hide likely fakes** (on by default) hides a listing when another one has the same IP and
+  game port; when several listings with players share a name, map, and mods (the busiest one
+  stays; default host names like "nitrado.net gameserver" don't count); when its numbers can't
+  be right (more players than slots, over 127 slots, a queue over 255); and when the server's own
+  answers keep saying far fewer players than the list. The details panel says why. Favorites,
+  recent servers, and servers added by address always show.
 
 ### Game version
 
@@ -213,8 +231,9 @@ release downloads include it. Valve's library isn't part of this repository.
 ## Settings and files
 
 - Settings: `~/.config/dayz-browser/config.toml` (Windows: `%APPDATA%\dayz-browser\config`).
-- Favorites, recent servers, filters, and the cached list: `~/.local/share/dayz-browser/`
-  (Windows: `%APPDATA%\dayz-browser\data`). Offline Mode and its saves are in `offline/` there.
+- Favorites, recent servers, filters, the cached list, and the country database:
+  `~/.local/share/dayz-browser/` (Windows: `%APPDATA%\dayz-browser\data`). Offline Mode and its
+  saves are in `offline/` there.
 - Notes are in `state.json` there, and player history in its `history` folder (a small file per
   server).
 
@@ -224,6 +243,8 @@ release downloads include it. Valve's library isn't part of this repository.
   [WoozyMasta/a2s](https://github.com/WoozyMasta/a2s) (both MIT). This decoder is written from that
   description.
 - Server list: [DZSA Launcher](https://dayzsalauncher.com)'s public API.
+- Server countries: [IP geolocation by DB-IP](https://db-ip.com) (IP to Country Lite, CC BY 4.0),
+  read with [maxminddb](https://github.com/oschwald/maxminddb-rust) (ISC).
 - Steamworks access: [steamworks-rs](https://github.com/Noxime/steamworks-rs).
 - Offline mode: [DayZ Community Offline Mode](https://github.com/Arkensor/DayZCommunityOfflineMode),
   downloaded from its releases. The Linux launch follows [DZGUI](https://github.com/aclist/dztui).
