@@ -27,6 +27,11 @@ pub struct LocalItem {
     pub time_updated: u64,
     /// Steam knows a newer version (its manifest differs from the latest one).
     pub needs_update: bool,
+    /// The Workshop's update time when Steam last compared manifests (its
+    /// `latest_timeupdated`), if it recorded one: a Workshop time no newer than this is a change
+    /// Steam has already seen, so its manifests say whether the files changed (an edited
+    /// description changes the time but not the files).
+    pub steam_checked: Option<u64>,
 }
 
 /// The mods in DayZ's Workshop folder.
@@ -48,7 +53,7 @@ impl LocalMods {
                     continue;
                 };
                 // An item mid-download can exist without content yet.
-                if entry.path().join("meta.cpp").is_file() || entry.path().join("addons").is_dir() {
+                if entry.path().join("meta.cpp").is_file() || has_addons(&entry.path()) {
                     items.insert(id, LocalItem::default());
                 }
             }
@@ -68,11 +73,16 @@ impl LocalMods {
                             .and_then(|t| t.parse().ok())
                             .unwrap_or(0);
                         let manifest = entry.str("manifest");
-                        let latest = details
-                            .and_then(|d| d.get(&id.to_string()))
-                            .and_then(|d| d.str("latest_manifest"));
+                        let detail = details.and_then(|d| d.get(&id.to_string()));
+                        let latest = detail.and_then(|d| d.str("latest_manifest"));
                         item.needs_update =
                             matches!((manifest, latest), (Some(m), Some(l)) if m != l);
+                        item.steam_checked = match (manifest, latest) {
+                            (Some(_), Some(_)) => detail
+                                .and_then(|d| d.str("latest_timeupdated"))
+                                .and_then(|t| t.parse().ok()),
+                            _ => None,
+                        };
                     }
                 }
             }
@@ -80,7 +90,9 @@ impl LocalMods {
         Self { items }
     }
 
-    /// A mod's state; `remote_updated` is the Workshop's last update time, if known.
+    /// A mod's state; `remote_updated` is the Workshop's last update time, if known. Steam's own
+    /// record decides when it has seen that update; otherwise an update time newer than the
+    /// installed version's counts as outdated.
     pub fn state(&self, id: u64, remote_updated: Option<u64>) -> ModState {
         if id == 0 {
             return ModState::NotWorkshop;
@@ -88,8 +100,10 @@ impl LocalMods {
         match self.items.get(&id) {
             None => ModState::Missing,
             Some(item) => {
-                let newer_remote = remote_updated
-                    .is_some_and(|remote| item.time_updated > 0 && remote > item.time_updated);
+                let newer_remote = remote_updated.is_some_and(|remote| {
+                    let steam_saw_it = item.steam_checked.is_some_and(|seen| remote <= seen);
+                    !steam_saw_it && item.time_updated > 0 && remote > item.time_updated
+                });
                 if item.needs_update || newer_remote {
                     ModState::Outdated
                 } else {
@@ -98,6 +112,16 @@ impl LocalMods {
             }
         }
     }
+}
+
+/// Whether a mod folder has its `addons` folder, however it's capitalised (mods ship `Addons`
+/// as often as `addons`, and Linux folders are case-sensitive).
+fn has_addons(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.file_name().eq_ignore_ascii_case("addons") && e.path().is_dir())
+    })
 }
 
 /// The record of the links this browser made (their full paths), so it only ever removes its own.
@@ -282,6 +306,91 @@ mod tests {
         );
         assert_eq!(local.state(444, None), ModState::Missing);
         assert_eq!(local.state(0, None), ModState::NotWorkshop);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finds_addons_in_any_case() {
+        let (install, root) = temp_install("addons-case");
+        std::fs::create_dir_all(install.workshop.join("111/Addons")).unwrap();
+        std::fs::create_dir_all(install.workshop.join("222/ADDONS")).unwrap();
+        // Mid-download: neither content nor meta.cpp yet.
+        std::fs::create_dir_all(install.workshop.join("333/keys")).unwrap();
+        // A file by that name isn't the folder.
+        std::fs::create_dir_all(install.workshop.join("444")).unwrap();
+        std::fs::write(install.workshop.join("444/addons"), "").unwrap();
+        let local = LocalMods::load(&install);
+        assert_eq!(local.state(111, None), ModState::Installed);
+        assert_eq!(local.state(222, None), ModState::Installed);
+        assert_eq!(local.state(333, None), ModState::Missing);
+        assert_eq!(local.state(444, None), ModState::Missing);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Steam's record as it writes it (tabs, and both sections).
+    #[test]
+    fn prefers_steams_manifests_to_update_times() {
+        let (install, root) = temp_install("acf");
+        for id in ["1559212036", "1564026768", "1565871491", "1566911166"] {
+            std::fs::create_dir_all(install.workshop.join(id).join("addons")).unwrap();
+        }
+        std::fs::write(
+            &install.manifest,
+            "\"AppWorkshop\"\n{\n\t\"appid\"\t\t\"221100\"\n\t\"NeedsUpdate\"\t\t\"0\"\n\
+             \t\"WorkshopItemsInstalled\"\n\t{\n\
+             \t\t\"1559212036\"\n\t\t{\n\t\t\t\"size\"\t\t\"527656\"\n\
+             \t\t\t\"timeupdated\"\t\t\"1771519119\"\n\t\t\t\"manifest\"\t\t\"4114705373119672275\"\n\t\t}\n\
+             \t\t\"1564026768\"\n\t\t{\n\t\t\t\"timeupdated\"\t\t\"1784113051\"\n\
+             \t\t\t\"manifest\"\t\t\"4299442315021813277\"\n\t\t}\n\
+             \t\t\"1565871491\"\n\t\t{\n\t\t\t\"timeupdated\"\t\t\"1732651888\"\n\
+             \t\t\t\"manifest\"\t\t\"2642877461524886469\"\n\t\t}\n\
+             \t\t\"1566911166\"\n\t\t{\n\t\t\t\"timeupdated\"\t\t\"1775676235\"\n\
+             \t\t\t\"manifest\"\t\t\"1852252921219504809\"\n\t\t}\n\
+             \t}\n\
+             \t\"WorkshopItemDetails\"\n\t{\n\
+             \t\t\"1559212036\"\n\t\t{\n\t\t\t\"manifest\"\t\t\"4114705373119672275\"\n\
+             \t\t\t\"timeupdated\"\t\t\"1771519119\"\n\t\t\t\"timetouched\"\t\t\"1791506075\"\n\
+             \t\t\t\"latest_timeupdated\"\t\t\"1780000000\"\n\
+             \t\t\t\"latest_manifest\"\t\t\"4114705373119672275\"\n\t\t}\n\
+             \t\t\"1564026768\"\n\t\t{\n\t\t\t\"manifest\"\t\t\"4299442315021813277\"\n\
+             \t\t\t\"latest_timeupdated\"\t\t\"1790000000\"\n\
+             \t\t\t\"latest_manifest\"\t\t\"5000000000000000000\"\n\t\t}\n\
+             \t\t\"1565871491\"\n\t\t{\n\t\t\t\"manifest\"\t\t\"2642877461524886469\"\n\
+             \t\t\t\"latest_timeupdated\"\t\t\"1732651888\"\n\
+             \t\t\t\"latest_manifest\"\t\t\"2642877461524886469\"\n\t\t}\n\
+             \t}\n}\n",
+        )
+        .unwrap();
+        let local = LocalMods::load(&install);
+        // Only the description changed: Steam saw that update, and the files are the same.
+        assert_eq!(
+            local.state(1559212036, Some(1780000000)),
+            ModState::Installed
+        );
+        // Steam knows of new files.
+        assert_eq!(local.state(1564026768, None), ModState::Outdated);
+        assert_eq!(
+            local.state(1564026768, Some(1784113051)),
+            ModState::Outdated
+        );
+        // An update newer than Steam last saw: Steam's record is stale, so the times decide.
+        assert_eq!(
+            local.state(1565871491, Some(1732651888)),
+            ModState::Installed
+        );
+        assert_eq!(
+            local.state(1565871491, Some(1790000000)),
+            ModState::Outdated
+        );
+        // No details from Steam: the times decide.
+        assert_eq!(
+            local.state(1566911166, Some(1775676235)),
+            ModState::Installed
+        );
+        assert_eq!(
+            local.state(1566911166, Some(1775676236)),
+            ModState::Outdated
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
