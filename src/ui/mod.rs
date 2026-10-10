@@ -12,8 +12,10 @@ mod bars;
 mod connect;
 mod details;
 mod filters;
+mod history;
 mod join;
 mod list;
+mod notes;
 mod settings;
 mod updates;
 
@@ -75,6 +77,8 @@ pub enum Msg {
         result: Result<Found, String>,
         then: Then,
     },
+    /// From the recorder of server history.
+    History(crate::history::Event),
 }
 
 /// What a server looked up by address is for.
@@ -183,6 +187,10 @@ pub struct App {
     toast: Option<(String, Instant)>,
     update: updates::UpdateStatus,
     last_update_check: Option<Instant>,
+    /// The note being edited in the details panel.
+    note_draft: Option<notes::NoteDraft>,
+    /// Recording player counts, and the chart of them.
+    history: history::HistoryUi,
 }
 
 impl App {
@@ -199,6 +207,7 @@ impl App {
                 ctx.request_repaint();
             })
         };
+        let history = history::HistoryUi::new(&ctx, &tx);
         let settings = Settings::load();
         let install = steam::find(settings.game_dir.as_deref()).map_err(|e| format!("{e:#}"));
         let local = install.as_ref().map(LocalMods::load).unwrap_or_default();
@@ -252,6 +261,8 @@ impl App {
             update: updates::UpdateStatus::Idle,
             last_update_check: None,
             settings,
+            note_draft: None,
+            history,
         };
         app.load_list(false);
         app.check_overlay(true);
@@ -302,6 +313,7 @@ impl App {
                 .game_version
                 .as_deref()
                 .and_then(|game| version::same(game, version)),
+            note: self.state.notes.get(&addr).cloned().unwrap_or_default(),
         }
     }
 
@@ -475,6 +487,7 @@ impl App {
                 }
             }
             Msg::Pong(pong) => {
+                self.history_answer(&pong);
                 self.pinging.remove(&pong.addr);
                 // What the filters and sorting read from an answer, besides the ping.
                 let index = self.index.get(&pong.addr).copied();
@@ -568,6 +581,7 @@ impl App {
             }
             Msg::Found { addr, result, then } => self.found(&addr, result, then),
             Msg::Update(msg) => self.update_msg(msg),
+            Msg::History(event) => self.history_event(event),
         }
     }
 
@@ -914,9 +928,11 @@ impl eframe::App for App {
             }
         }
         self.check_for_update_now_and_then();
+        self.history_now_and_then();
     }
 
     fn on_exit(&mut self) {
+        self.commit_note();
         // Keep a change made in the last moment before closing.
         if self.state_changed.take().is_some()
             && let Err(e) = self.state.save()

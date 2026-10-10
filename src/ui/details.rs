@@ -32,6 +32,7 @@ impl App {
     }
 
     pub(super) fn details_panel(&mut self, ui: &mut egui::Ui) {
+        self.note_follows_selection();
         let Some(addr) = self.selected.clone() else {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
@@ -76,6 +77,7 @@ impl App {
             if ui.selectable_label(favorite, label).clicked() {
                 self.toggle_favorite(&addr);
             }
+            self.note_button(ui, &addr);
         });
         if self.state.added.contains(&addr) && self.only_added(&addr) {
             ui.horizontal(|ui| {
@@ -174,6 +176,8 @@ impl App {
                 let locked = s.password || info.as_ref().is_some_and(|i| i.password);
                 row(ui, "Password", if locked { "Yes" } else { "No" }.into());
             });
+        self.note_section(ui, &addr);
+        self.history_section(ui, &addr);
 
         ui.add_space(10.0);
         let (mods, origin) = self.mods_for(&s);

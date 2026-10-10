@@ -129,7 +129,11 @@ impl App {
                         }
                     });
                     row.col(|ui| {
-                        ui.label(&s.name);
+                        if seen.note.is_empty() {
+                            ui.label(&s.name);
+                        } else {
+                            super::notes::noted_name(ui, &s.name, &seen.note);
+                        }
                     });
                     row.col(|ui| {
                         ui.label(map_title(&s.map));
@@ -261,6 +265,15 @@ impl App {
                 ui.ctx().copy_text(format!("{}:{}", s.ip, s.game_port));
                 self.toast("Address copied");
             }
+            ui.close();
+        }
+        let note = if self.state.notes.contains_key(addr) {
+            "Edit note…"
+        } else {
+            "Add note…"
+        };
+        if ui.button(note).clicked() {
+            self.edit_note(addr);
             ui.close();
         }
     }

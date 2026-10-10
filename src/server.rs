@@ -128,6 +128,8 @@ pub struct Seen {
     pub favorite: bool,
     /// Whether it runs the installed game's version; `None` if either is unknown.
     pub same_version: Option<bool>,
+    /// The user's note on it; empty if none.
+    pub note: String,
 }
 
 /// Reads a list of maps, or the single world name (empty for any) that older versions saved.
@@ -199,7 +201,8 @@ impl Filters {
                 || format!("{}:{}", s.ip, s.game_port).contains(&needle)
                 || s.mods
                     .iter()
-                    .any(|m| m.name.to_lowercase().contains(&needle));
+                    .any(|m| m.name.to_lowercase().contains(&needle))
+                || seen.note.to_lowercase().contains(&needle);
             if !hit {
                 return false;
             }
@@ -278,6 +281,13 @@ mod tests {
         assert!(f.matches(&s, &Seen::default()));
         f.search = "namalsk".into();
         assert!(!f.matches(&s, &Seen::default()));
+        f.search = "BASE".into();
+        assert!(!f.matches(&s, &Seen::default()));
+        let noted = Seen {
+            note: "Our base is north of Sinystok".into(),
+            ..Default::default()
+        };
+        assert!(f.matches(&s, &noted));
         for (search, keep) in [
             ("203.0.113.5", true),
             ("203.0.113.5:27016", true),
