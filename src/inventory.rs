@@ -534,6 +534,11 @@ mod tests {
         assert_eq!(account_from_login_users(r#""users" { "12" { } }"#), None);
     }
 
+    /// A path as Steam writes it in a `.vdf` file, where backslashes are doubled.
+    fn vdf_path(path: &Path) -> String {
+        path.display().to_string().replace('\\', "\\\\")
+    }
+
     #[test]
     fn asks_the_steam_that_owns_the_library() {
         let root = std::env::temp_dir().join(format!("dzb-inv-roots-{}", std::process::id()));
@@ -562,8 +567,8 @@ mod tests {
             flatpak.join("steamapps/libraryfolders.vdf"),
             format!(
                 r#""libraryfolders" {{ "0" {{ "path" "{}" }} "1" {{ "path" "{}" }} }}"#,
-                flatpak.display(),
-                library.display()
+                vdf_path(&flatpak),
+                vdf_path(&library)
             ),
         )
         .unwrap();

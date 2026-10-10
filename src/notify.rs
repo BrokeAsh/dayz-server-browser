@@ -31,7 +31,9 @@ pub fn show(title: &str, body: &str, sound: bool, on_click: Option<OnClick>) -> 
     // documents, which takes care of it on Windows.
     #[cfg(not(windows))]
     let body = escape_markup(body);
-    note.appname(APP_NAME).summary(title).body(&body);
+    #[cfg(not(windows))]
+    let body = body.as_str();
+    note.appname(APP_NAME).summary(title).body(body);
     platform(&mut note, sound, on_click.is_some());
     let handle = note.show().map_err(|e| anyhow!("{e}"))?;
     #[cfg(not(windows))]
