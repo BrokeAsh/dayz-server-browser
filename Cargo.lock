@@ -1002,6 +1002,7 @@ name = "dayz-browser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-io",
  "directories",
  "discord-rich-presence",
  "eframe",
@@ -1009,6 +1010,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "fs4",
+ "futures-lite",
  "jiff",
  "keyring",
  "log",

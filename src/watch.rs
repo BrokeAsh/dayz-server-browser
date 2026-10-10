@@ -26,6 +26,8 @@ const SILENT_AFTER: u32 = 2;
 /// After a notification, a server has to be without room this long to be notified again.
 pub const REARM: Duration = Duration::from_secs(2 * 60);
 const TIMEOUT: Duration = Duration::from_secs(2);
+/// A server's name and map are cut to this many characters in a notification.
+const TEXT_MAX: usize = 100;
 /// At start, the first checks wait this long, out of the way of loading the list.
 const START_DELAY: Duration = Duration::from_secs(3);
 
@@ -173,6 +175,55 @@ impl Tracker {
             added.then_some(Event::Added)
         }
     }
+}
+
+/// After DayZ is started on a server, a room notification for it is noise for this long: the
+/// game is on its way in.
+const JOINING_QUIET: Duration = Duration::from_secs(3 * 60);
+
+/// Servers being joined, which get no room notifications: the ones the join window waits on
+/// (it starts DayZ by itself when there's room), and the last one DayZ was started on.
+#[derive(Debug, Default)]
+struct Joining {
+    waiting: Vec<String>,
+    launched: Option<(String, Instant)>,
+}
+
+impl Joining {
+    fn quiet(&self, addr: &str, now: Instant) -> bool {
+        self.waiting.iter().any(|a| a == addr)
+            || self.launched.as_ref().is_some_and(|(a, at)| {
+                a == addr && now.saturating_duration_since(*at) < JOINING_QUIET
+            })
+    }
+}
+
+static JOINING: std::sync::Mutex<Joining> = std::sync::Mutex::new(Joining {
+    waiting: Vec::new(),
+    launched: None,
+});
+
+fn joining<T>(f: impl FnOnce(&mut Joining) -> T) -> T {
+    f(&mut JOINING.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The join window started waiting for room on a server (`ip:query_port`).
+pub fn waiting_to_join(addr: &str) {
+    joining(|j| j.waiting.push(addr.to_string()));
+}
+
+/// The join window stopped waiting for room on a server.
+pub fn done_waiting(addr: &str) {
+    joining(|j| {
+        if let Some(i) = j.waiting.iter().position(|a| a == addr) {
+            j.waiting.remove(i);
+        }
+    });
+}
+
+/// DayZ was started on a server.
+pub fn launched(addr: &str) {
+    joining(|j| j.launched = Some((addr.to_string(), Instant::now())));
 }
 
 /// What the watcher reports to the window.
@@ -334,7 +385,11 @@ fn run(rx: &mpsc::Receiver<Cmd>, sound: &AtomicBool, report: &Report) {
         if event == Some(Event::Notify)
             && let Some(info) = &pong.info
         {
-            notify_room(&addr, info, sound.load(Ordering::Relaxed), report);
+            if joining(|j| j.quiet(&addr, now)) {
+                log::info!("{addr} has room, but it's being joined: no notification");
+            } else {
+                notify_room(&addr, info, sound.load(Ordering::Relaxed), report);
+            }
         }
         report(Out::Checked {
             status: entry.tracker.status(),
@@ -345,19 +400,20 @@ fn run(rx: &mpsc::Receiver<Cmd>, sound: &AtomicBool, report: &Report) {
 }
 
 /// Tells the user a server has room, on its own thread (showing it can take a moment, and on
-/// Linux the thread then waits for a click). Falls back to the window if it can't be shown.
+/// Linux the thread then waits a few minutes at most for a click). Falls back to the window if
+/// it can't be shown.
 fn notify_room(addr: &str, info: &Info, sound: bool, report: &Report) {
-    let name = if info.name.is_empty() {
-        addr.to_string()
-    } else {
-        info.name.clone()
+    // The server's own words, so kept to plain text of a sensible length.
+    let name = match notify::server_text(&info.name, TEXT_MAX) {
+        name if name.is_empty() => addr.to_string(),
+        name => name,
     };
     let title = format!("Room on {name}");
     let body = format!(
         "{}/{} players, no queue · {}",
         info.players,
         info.max_players,
-        map_title(&info.map)
+        notify::server_text(&map_title(&info.map), TEXT_MAX)
     );
     log::info!("notifying: {title} ({body})");
     let (addr, report) = (addr.to_string(), report.clone());
@@ -514,6 +570,20 @@ mod tests {
         assert!(t.status().room());
         assert_eq!(t.observe(secs(t0, 35), Some(ROOM)), None);
         assert!(!t.unsure());
+    }
+
+    #[test]
+    fn servers_being_joined_are_quiet() {
+        let t0 = Instant::now();
+        let mut j = Joining::default();
+        assert!(!j.quiet("a", t0));
+        j.waiting.push("a".into());
+        assert!(j.quiet("a", t0) && !j.quiet("b", t0));
+        j.waiting.clear();
+        j.launched = Some(("a".into(), t0));
+        assert!(j.quiet("a", secs(t0, 60)));
+        assert!(!j.quiet("b", secs(t0, 60)));
+        assert!(!j.quiet("a", t0 + JOINING_QUIET), "long since started");
     }
 
     #[test]

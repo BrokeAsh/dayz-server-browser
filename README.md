@@ -108,14 +108,17 @@ Sites that keep player history want a paid key or have no API, so the browser ke
 it's open, it asks your favorite, recent, and watched servers for their player count every 5 minutes (and
 keeps answers it gets anyway), for two weeks. The details panel charts the last 24 hours or 7 days.
 When a server stops answering for a few minutes, or its in-game clock is set back, that counts as
-a restart; once those fall at the same times of day on several days, the panel says when it usually
+a restart (when it's the only server asked, it has to miss two checks in a row, so a blip in your
+own connection doesn't count); once those fall at the same times of day on several days, the panel says when it usually
 restarts (in your local time). Nothing is recorded while the browser is closed.
 ### Countries, official servers, and likely fakes
 
 - **Country** comes from the server's IP address, looked up in [DB-IP](https://db-ip.com)'s free
   country database. The browser downloads it (about 4 MB) into its data folder the first time and
   again once it's a month old, in the background; until it's there, servers just have no country.
-  Search matches countries too (`de`, `germany`).
+  Search matches countries too: the code (`de`), or the start of the name or of a word in it
+  (`germ`, `kingdom`), so searching for part of a server's name doesn't bring in whole countries.
+  Servers whose country isn't known sort last either way.
 - **Official** servers are the game's own: DZSA's "public" shard, or, on Steam's list, servers
   without the community tags. A name with "Official" in it doesn't count.
 - **Time speed** is how many times faster than real time the server's day runs (and its night,
@@ -124,8 +127,10 @@ restarts (in your local time). Nothing is recorded while the browser is closed.
   game port; when several listings with players share a name, map, and mods (the busiest one
   stays; default host names like "nitrado.net gameserver" don't count); when its numbers can't
   be right (more players than slots, over 127 slots, a queue over 255); and when the server's own
-  answers keep saying far fewer players than the list. The details panel says why. Favorites,
-  recent servers, watched servers, and servers added by address always show.
+  answers keep saying far fewer players than the list (for 10 minutes after the last such
+  answer, then it shows again to be asked again, since a restart empties a server for a while).
+  The details panel says why. Favorites, recent servers, watched servers, and servers added by
+  address always show.
 
 ### Game version
 
@@ -152,7 +157,8 @@ The join window adds up the size of the mods to download or update (from the Wor
 an update counts in full, since Steam downloads the whole new version before replacing the old
 one) and checks the free space on the drive with the Steam library. If the downloads wouldn't
 leave a tenth of their size spare (at least 1 GB), it says how much is needed and how much is
-free, and won't download them or wait to join until there's room. When sizes aren't known, it
+free, and won't download them, launch, or wait to join until there's room (with only updates
+left, Steam couldn't install them, and joining would likely fail). When sizes aren't known, it
 says so and doesn't stop you.
 
 **Mods** in the top bar lists the Workshop mods Steam installed for your account, with their
@@ -212,10 +218,11 @@ While the browser is open it asks each one about every 30 seconds, and sends a d
 notification when one goes from full, queued, or not answering to a free slot with no queue.
 A server that keeps getting and losing a slot isn't announced again until it has been without room
 for two minutes. This is separate from the join window's **Join when there's room**, which joins by
-itself.
+itself: a server it's waiting on, or that DayZ was just started on, isn't announced.
 
 - **Linux:** through your desktop's notification service. Clicking the notification or its
-  **Join** button brings the browser forward with the join window open.
+  **Join** button brings the browser forward with the join window open. A notification nobody
+  clicks is taken down after 5 minutes, since the room is likely gone by then.
 - **Windows:** a toast, for information only. Windows names the sender of a toast after the
   program's Start menu entry, which the unpacked browser doesn't have, so it shows as Windows
   PowerShell, and clicking it doesn't bring up the browser.

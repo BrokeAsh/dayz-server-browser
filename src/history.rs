@@ -302,6 +302,7 @@ fn run(dir: &Path, rx: &mpsc::Receiver<Job>, rounds: &mpsc::Sender<Job>, report:
     let mut asking = false;
     // The minute of each server's latest sample written this run.
     let mut latest: HashMap<String, u32> = HashMap::new();
+    let mut silence = Silence::default();
     let mut warned = false;
     let mut write = |addr: String, sample: Sample, latest: &mut HashMap<String, u32>| {
         match append(dir, &addr, &sample) {
@@ -325,6 +326,7 @@ fn run(dir: &Path, rx: &mpsc::Receiver<Job>, rounds: &mpsc::Sender<Job>, report:
                 let recent = latest
                     .get(&addr)
                     .is_some_and(|&m| sample.minute < m.saturating_add(PING_GAP));
+                silence.answered(&addr);
                 if !recent && targets.contains(&addr) {
                     write(addr, sample, &mut latest);
                 }
@@ -334,10 +336,8 @@ fn run(dir: &Path, rx: &mpsc::Receiver<Job>, rounds: &mpsc::Sender<Job>, report:
             }
             Ok(Job::Round(answers)) => {
                 asking = false;
-                // When no server answered, it's more likely this computer's connection.
-                let offline = answers.len() >= 2 && answers.iter().all(|(_, s)| !s.answered);
-                for (addr, sample) in answers {
-                    if !offline && targets.contains(&addr) {
+                for (addr, sample) in silence.round(answers) {
+                    if targets.contains(&addr) {
                         write(addr, sample, &mut latest);
                     }
                 }
@@ -353,6 +353,54 @@ fn run(dir: &Path, rx: &mpsc::Receiver<Job>, rounds: &mpsc::Sender<Job>, report:
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Decides which of a round's answers to record, so this computer's own connection dropping
+/// doesn't look like servers restarting. When no server answered a round of several, it's more
+/// likely the connection: nothing is recorded. With only one server asked, there's nothing to
+/// compare with, so its silence is held back until the next round confirms it (it's silent
+/// again) or not (it answered: the silence is dropped).
+#[derive(Debug, Default)]
+struct Silence {
+    /// The lone server's silent sample waiting for the next round.
+    held: Option<(String, Sample)>,
+    /// The lone server whose silence the last round confirmed, so its next silence is recorded
+    /// straight away.
+    confirmed: Option<String>,
+}
+
+impl Silence {
+    fn round(&mut self, answers: Vec<(String, Sample)>) -> Vec<(String, Sample)> {
+        let held = self.held.take();
+        let confirmed = self.confirmed.take();
+        match &answers[..] {
+            [(addr, sample)] if !sample.answered => {
+                let silent_before = confirmed.as_ref() == Some(addr)
+                    || held.as_ref().is_some_and(|(a, _)| a == addr);
+                if !silent_before {
+                    self.held = answers.into_iter().next();
+                    return Vec::new();
+                }
+                self.confirmed = Some(addr.clone());
+                held.filter(|(a, _)| a == addr)
+                    .into_iter()
+                    .chain(answers)
+                    .collect()
+            }
+            _ if answers.len() >= 2 && answers.iter().all(|(_, s)| !s.answered) => Vec::new(),
+            _ => answers,
+        }
+    }
+
+    /// A server answered a ping between rounds: a silence held back isn't confirmed.
+    fn answered(&mut self, addr: &str) {
+        if self.held.as_ref().is_some_and(|(a, _)| a == addr) {
+            self.held = None;
+        }
+        if self.confirmed.as_deref() == Some(addr) {
+            self.confirmed = None;
         }
     }
 }
@@ -550,6 +598,39 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn silence_needs_confirming() {
+        let one = |s: Sample| vec![("a".to_string(), s)];
+        let minutes = |kept: Vec<(String, Sample)>| -> Vec<u32> {
+            kept.into_iter().map(|(_, s)| s.minute).collect()
+        };
+        let mut silence = Silence::default();
+        assert_eq!(minutes(silence.round(one(up(0, 5)))), [0]);
+        // One favorite and a network blip: the silence is dropped, so no restart is made up.
+        assert!(silence.round(one(Sample::silent(5))).is_empty());
+        assert_eq!(minutes(silence.round(one(up(10, 5)))), [10]);
+        // Silent twice in a row: both are recorded, and so is any more silence after.
+        assert!(silence.round(one(Sample::silent(15))).is_empty());
+        assert_eq!(minutes(silence.round(one(Sample::silent(20)))), [15, 20]);
+        assert_eq!(minutes(silence.round(one(Sample::silent(25)))), [25]);
+        assert_eq!(minutes(silence.round(one(up(30, 0)))), [30]);
+        // An answer to a ping in between: not confirmed.
+        assert!(silence.round(one(Sample::silent(35))).is_empty());
+        silence.answered("a");
+        assert!(silence.round(one(Sample::silent(40))).is_empty());
+        // Several servers: all silent is this computer, otherwise it's theirs.
+        let both = |a: Sample, b: Sample| vec![("a".to_string(), a), ("b".to_string(), b)];
+        assert!(
+            silence
+                .round(both(Sample::silent(45), Sample::silent(45)))
+                .is_empty()
+        );
+        assert_eq!(
+            minutes(silence.round(both(Sample::silent(50), up(50, 3)))),
+            [50, 50]
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use super::join::RELAUNCH_GAP;
+use super::join::{RELAUNCH_GAP, SETTLE, megabytes};
 use super::{App, ERROR, Msg, OverlayStatus, WARN, open_workshop};
 use crate::launch;
 use crate::mods::ModState;
@@ -16,9 +16,6 @@ use crate::workshop::{self, Event, ItemState};
 
 /// While the browser stays open, ask GitHub about a new release again after this long.
 const CHECK_AGAIN: Duration = Duration::from_secs(60 * 60);
-/// After the Workshop helper exits, Steam may still count DayZ as running for a moment and
-/// ignore a launch.
-const SETTLE: Duration = Duration::from_secs(5);
 
 pub enum OfflineMsg {
     Latest(Result<Release, String>),
@@ -731,8 +728,4 @@ fn mods_row(
         ui.label("");
         ui.label(RichText::new(e).color(ERROR));
     }
-}
-
-fn megabytes(bytes: u64) -> String {
-    format!("{:.0} MB", bytes as f64 / 1_000_000.0)
 }

@@ -17,6 +17,7 @@ use crate::mods::ModState;
 use crate::server::{ModRef, Server, map_title};
 use crate::settings::{Recent, data_dir};
 use crate::steam_api;
+use crate::watch;
 use crate::workshop::{self, Event, ItemState};
 
 /// How often to ask the server while waiting for room: often, because after a restart the
@@ -27,8 +28,8 @@ const FRESH: Duration = Duration::from_secs(3);
 /// Silent this long while waiting counts as a restart.
 const RESTARTING: Duration = Duration::from_secs(5);
 /// After the Workshop helper exits, Steam may still count DayZ as running for a moment and
-/// ignore a launch; launching waits this long.
-const SETTLE: Duration = Duration::from_secs(5);
+/// ignore a launch; launching waits this long (here and in the "Play offline" window).
+pub(super) const SETTLE: Duration = Duration::from_secs(5);
 /// A launch with other mods soon after another, before the game shows up, could pull the first
 /// one's mod links from under it.
 pub(super) const RELAUNCH_GAP: Duration = Duration::from_secs(45);
@@ -83,13 +84,17 @@ pub(super) fn waiting_for_room() -> bool {
 
 /// Asks one server for its player count and queue every second, until dropped. Its answers arrive
 /// as ordinary pings, so the window and the list both see them.
+/// While it runs, the watch list doesn't notify about the server.
 struct SlotWatch {
+    addr: String,
     stop: Arc<AtomicBool>,
 }
 
 impl SlotWatch {
     fn start(app: &App, addr: &str) -> Self {
         WATCHING.fetch_add(1, Ordering::Relaxed);
+        watch::waiting_to_join(addr);
+        let watched = addr.to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, ctx, addr, stopped) = (
             app.tx.clone(),
@@ -105,7 +110,10 @@ impl SlotWatch {
                 let answer = a2s::info(target, Duration::from_secs(2)).ok();
                 let pong = Pong {
                     addr: addr.clone(),
-                    ping: answer.as_ref().map(|(_, took)| took.as_millis() as u32),
+                    // At least 1 ms, as the pinger reports it.
+                    ping: answer
+                        .as_ref()
+                        .map(|(_, took)| (took.as_millis() as u32).max(1)),
                     info: answer.map(|(info, _)| info),
                 };
                 if tx.send(Msg::Pong(pong)).is_err() {
@@ -118,7 +126,10 @@ impl SlotWatch {
                 }
             }
         });
-        Self { stop }
+        Self {
+            addr: watched,
+            stop,
+        }
     }
 }
 
@@ -126,6 +137,7 @@ impl Drop for SlotWatch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         WATCHING.fetch_sub(1, Ordering::Relaxed);
+        watch::done_waiting(&self.addr);
     }
 }
 
@@ -258,8 +270,8 @@ impl Join {
             .is_some_and(|t| t.elapsed() < SETTLE)
     }
 
-    /// Why the downloads can't start (and waiting for room can't) for lack of disk space. Not
-    /// while downloads run or settle: they use up the space they were checked against.
+    /// Why the downloads can't start (nor the game, now or once there's room) for lack of disk
+    /// space. Not while downloads run or settle: they use up the space they were checked against.
     fn space_problem(&self, view: &View) -> Option<String> {
         if self.downloading() || self.settling() {
             return None;
@@ -529,6 +541,9 @@ impl App {
             "Downloads are still running".into()
         } else if join.settling() {
             "Steam is finishing the downloads…".into()
+        } else if join.space_problem(view).is_some() {
+            // Steam couldn't update the outdated mods, so joining would likely fail.
+            "Not enough disk space for the mod updates".into()
         } else if join.game_running {
             "DayZ is already running".into()
         } else {
@@ -584,8 +599,7 @@ impl App {
         let password_ok = !view.locked || !join.password.is_empty();
         // DayZ won't join a server on another version.
         let same_version = view.other_version.is_none();
-        let space_ok = join.space_problem(view).is_none();
-        (view.room() && ready && mods_known && password_ok && same_version && space_ok)
+        (view.room() && ready && mods_known && password_ok && same_version)
             .then(|| Action::Launch(view.workshop_ids()))
     }
 
@@ -746,6 +760,8 @@ impl App {
         }
         plan.spawn()?;
         self.last_launch = Some((Instant::now(), ids.to_vec()));
+        // DayZ is on its way in: no "room" notification for it from the watch list.
+        watch::launched(&view.server.addr());
         let joined = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -1017,10 +1033,6 @@ fn wait_section(
         ui.label(RichText::new(situation).color(WARN));
     }
     let needs_password = view.locked && join.password.is_empty();
-    // The details are with the mods, above.
-    let no_space = join
-        .space_problem(view)
-        .map(|_| "Not enough disk space for the mod updates");
     ui.horizontal(|ui| {
         if waiting {
             ui.spinner();
@@ -1033,7 +1045,6 @@ fn wait_section(
                 None if view.other_version.is_some() => {
                     but(ui, "the server runs another version of DayZ")
                 }
-                None if no_space.is_some() => but(ui, "not enough disk space for the mod updates"),
                 None if view.down => ui.label("Waiting for it to come back with room…"),
                 None => ui.label("Waiting for a free slot with no queue…"),
             };
@@ -1042,9 +1053,7 @@ fn wait_section(
             }
             return;
         }
-        let why_not = not_ready
-            .or(no_space)
-            .or(needs_password.then_some("Type the password first"));
+        let why_not = not_ready.or(needs_password.then_some("Type the password first"));
         if ui
             .add_enabled(
                 why_not.is_none(),
@@ -1109,6 +1118,7 @@ fn switch_prompt(ui: &mut egui::Ui, join: &Join, action: &mut Option<Action>) {
     ui.add_space(6.0);
 }
 
-fn megabytes(bytes: u64) -> String {
+/// Download progress, "120 MB".
+pub(super) fn megabytes(bytes: u64) -> String {
     format!("{:.0} MB", bytes as f64 / 1_000_000.0)
 }

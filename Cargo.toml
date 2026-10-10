@@ -44,7 +44,11 @@ keyring = { version = "3.6", features = ["windows-native"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [target."cfg(not(windows))".dependencies]
+# Waits for a click on a notification for a while, not forever (both already come with
+# notify-rust's D-Bus side).
+async-io = "2.6"
 flate2 = "1.1.10"
+futures-lite = "2.6"
 tar = "0.4.46"
 
 [profile.release]
