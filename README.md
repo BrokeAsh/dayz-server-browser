@@ -15,7 +15,9 @@ open, the overlay runs in the background, ready for the game.
 - Launches DayZ connected to the server with its mods, and stays open afterwards. For a full or
   queued server, it can wait and join as soon as there's a free slot and no queue, such as right
   after a restart.
-- Connects by address to servers the list doesn't have.
+- Connects by address to servers the list doesn't have, and finds servers on your local network.
+- Plays DayZ offline, on your own copy of Chernarus, Livonia, or Namalsk, with the Community
+  Offline Mode missions.
 - Notes on servers, which the search looks in too.
 - Records how many play on your favorite and recent servers while it's open, charts the last day
   or week, and tells when a server usually restarts.
@@ -66,6 +68,31 @@ never in the settings file or logs. Don't share it: it's tied to your Steam acco
 port). Servers answer queries on a separate port, most often the game port + 1 or 27016, so the
 browser asks the likely ones and keeps the server that says it plays on that port. Servers found
 this way stay in the list (until removed) and are looked up again each time the browser starts.
+
+**Find servers on my network** (in the same window) asks every address in your computer's local
+network (its /24, such as `192.168.1.1` to `192.168.1.254`) on the usual query ports, 27016 and
+2303, plus one more port if you type it, and lists the DayZ servers that answer within two
+seconds. Joining one remembers it like a server typed in.
+
+### Playing offline
+
+**Play offline** uses [Community Offline Mode](https://github.com/Arkensor/DayZCommunityOfflineMode),
+a set of missions that run a map in the game itself, with no server: loot and infected spawn as
+usual, and in the game, Y (Z on German keyboards) opens its menu (items, teleporting, the free
+camera). It isn't a Workshop mod: the browser downloads its latest GitHub release (about 13 MB)
+into its data folder, and offers an update when a new one comes out. Each map's progress is saved
+in its mission folder (`storage_-1`); updates keep it, and **Reset save** deletes it to start that
+map over. Namalsk needs the Namalsk Island and Namalsk Survival mods, which the window downloads
+like a server's mods.
+
+- **Linux:** `steam -applaunch 221100 -nolauncher -mission=Missions/<map's mission> -nosplash
+  -noPause -noBenchmark -filePatching -doLogs -scriptDebug=true`, with `-mod=` for Namalsk. The
+  mission path is relative to the game folder, so the browser links `Missions` there to its copy
+  (only if nothing else has that name) and removes the link at its next start. Flatpak Steam can't
+  see the browser's data folder until it's allowed:
+  `flatpak override --user --filesystem=~/.local/share/dayz-browser/offline com.valvesoftware.Steam`.
+- **Windows:** `DayZ_x64.exe -mission=<full path of the mission>` with the same arguments, the way
+  the release's own `.bat` starts it (without BattlEye). Nothing is written to the game folder.
 
 ### Notes and player history
 
@@ -187,7 +214,7 @@ release downloads include it. Valve's library isn't part of this repository.
 
 - Settings: `~/.config/dayz-browser/config.toml` (Windows: `%APPDATA%\dayz-browser\config`).
 - Favorites, recent servers, filters, and the cached list: `~/.local/share/dayz-browser/`
-  (Windows: `%APPDATA%\dayz-browser\data`).
+  (Windows: `%APPDATA%\dayz-browser\data`). Offline Mode and its saves are in `offline/` there.
 - Notes are in `state.json` there, and player history in its `history` folder (a small file per
   server).
 
@@ -198,6 +225,8 @@ release downloads include it. Valve's library isn't part of this repository.
   description.
 - Server list: [DZSA Launcher](https://dayzsalauncher.com)'s public API.
 - Steamworks access: [steamworks-rs](https://github.com/Noxime/steamworks-rs).
+- Offline mode: [DayZ Community Offline Mode](https://github.com/Arkensor/DayZCommunityOfflineMode),
+  downloaded from its releases. The Linux launch follows [DZGUI](https://github.com/aclist/dztui).
 - Discord status: [discord-rich-presence](https://github.com/vionya/discord-rich-presence) (MIT).
 
 ## License

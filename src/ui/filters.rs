@@ -244,7 +244,7 @@ fn range(ui: &mut egui::Ui, min: &mut u32, max: &mut u32) -> bool {
     .inner
 }
 
-fn truncate(text: &str, max: usize) -> String {
+pub(super) fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()
     } else {

@@ -6,7 +6,8 @@
 //! list, pinging, asking servers for their mods, and building the filtered, sorted view. Each
 //! part of the window is drawn in its own file: the server table in `list`, the filters panel in
 //! `filters`, the details panel in `details`, the top and status bars in `bars`, and the windows
-//! in `join`, `connect`, `settings`, `updates` and `news`; `discord` keeps Discord's status.
+//! in `join`, `connect`, `settings`, `updates`, `news` and `offline`; `discord` keeps Discord's
+//! status.
 
 mod bars;
 mod connect;
@@ -18,6 +19,7 @@ mod join;
 mod list;
 mod news;
 mod notes;
+mod offline;
 mod prejoin;
 mod settings;
 mod updates;
@@ -84,6 +86,9 @@ pub enum Msg {
     News(Result<Vec<crate::news::Item>, String>),
     /// From the recorder of server history.
     History(crate::history::Event),
+    Offline(offline::OfflineMsg),
+    /// A search of the local network for servers finished.
+    LanScan(Result<crate::lan::Scan, String>),
 }
 
 /// What a server looked up by address is for.
@@ -198,6 +203,7 @@ pub struct App {
     note_draft: Option<notes::NoteDraft>,
     /// Recording player counts, and the chart of them.
     history: history::HistoryUi,
+    offline: offline::Offline,
 }
 
 impl App {
@@ -267,6 +273,7 @@ impl App {
             toast: None,
             update: updates::UpdateStatus::Idle,
             last_update_check: None,
+            offline: offline::Offline::default(),
             settings,
             news: news::News::default(),
             discord: discord::DiscordStatus::default(),
@@ -277,6 +284,7 @@ impl App {
         app.check_overlay(true);
         app.read_game_version();
         app.check_for_update_now_and_then();
+        offline::remove_link_unless_playing();
         // Leftovers of an update; a moment later, once the version it replaced has quit.
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(10));
@@ -592,6 +600,12 @@ impl App {
             Msg::Update(msg) => self.update_msg(msg),
             Msg::News(result) => self.news_msg(result),
             Msg::History(event) => self.history_event(event),
+            Msg::Offline(msg) => self.offline_msg(msg),
+            Msg::LanScan(result) => {
+                if let Some(window) = &mut self.connect_window {
+                    window.scanned(result);
+                }
+            }
         }
     }
 
@@ -1002,6 +1016,7 @@ impl eframe::App for App {
         self.connect_window(&ctx);
         self.settings_window(&ctx);
         self.news_window(&ctx);
+        self.offline_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(4) {

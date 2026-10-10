@@ -91,7 +91,7 @@ struct GithubAsset {
 
 /// Downloads get longer than the shared agent allows for a body. Requests are hours apart, so
 /// there's no keeping connections open (a server may have closed one by the next).
-fn agent() -> &'static ureq::Agent {
+pub(crate) fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()

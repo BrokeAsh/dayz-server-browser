@@ -102,7 +102,7 @@ pub fn shown_args(args: &[String]) -> String {
 
 /// Steam on Linux hangs past roughly 1,000 characters of launch arguments.
 #[cfg(not(windows))]
-const STEAM_ARGS_LIMIT: usize = 950;
+pub(crate) const STEAM_ARGS_LIMIT: usize = 950;
 
 #[derive(Debug, Clone)]
 pub struct Launch {

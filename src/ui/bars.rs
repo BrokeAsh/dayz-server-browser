@@ -1,5 +1,6 @@
-//! The bars around the list: the top bar (Refresh, Connect by address, the search, Settings, News,
-//! and the Update button) and the status bar (list counts and age, pinging, the map overlay, DayZ).
+//! The bars around the list: the top bar (Refresh, Connect by address, Play offline, the search,
+//! Settings, News, and the Update button) and the status bar (list counts and age, pinging, the
+//! map overlay, DayZ).
 
 use eframe::egui::{self, Align, Layout, RichText};
 use std::time::SystemTime;
@@ -30,6 +31,13 @@ impl App {
                 && self.connect_window.is_none()
             {
                 self.connect_window = Some(connect::ConnectWindow::default());
+            }
+            if ui
+                .button("Play offline")
+                .on_hover_text("Play DayZ on your own, with no server (Community Offline Mode)")
+                .clicked()
+            {
+                self.open_offline();
             }
             ui.separator();
             ui.label("Search");

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::server::{ModRef, clean_name};
 
-const INFO_REQUEST: &[u8] = b"\xff\xff\xff\xffTSource Engine Query\0";
+pub(crate) const INFO_REQUEST: &[u8] = b"\xff\xff\xff\xffTSource Engine Query\0";
 const RULES_REQUEST: &[u8] = b"\xff\xff\xff\xffV\xff\xff\xff\xff";
 
 #[derive(Debug, Clone, Default)]
@@ -221,7 +221,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn parse_info(payload: &[u8]) -> Result<Info> {
+pub(crate) fn parse_info(payload: &[u8]) -> Result<Info> {
     let mut r = Reader { data: payload };
     if r.u8()? != 0x49 {
         bail!("not an info reply");

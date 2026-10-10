@@ -31,7 +31,7 @@ const RESTARTING: Duration = Duration::from_secs(5);
 const SETTLE: Duration = Duration::from_secs(5);
 /// A launch with other mods soon after another, before the game shows up, could pull the first
 /// one's mod links from under it.
-const RELAUNCH_GAP: Duration = Duration::from_secs(45);
+pub(super) const RELAUNCH_GAP: Duration = Duration::from_secs(45);
 /// While waiting, a mod list the server didn't send is asked for again this often...
 const RULES_AGAIN: Duration = Duration::from_secs(5);
 /// ...and only after this long without one do the list's mods (if it has them) do instead.
