@@ -150,7 +150,7 @@ fn convert(s: ListServer) -> Option<Server> {
         query_port: port.parse().ok()?,
         players: s.players,
         max_players: s.max_players,
-        time: tags.time,
+        time: tags.time.clone(),
         version: s.version,
         // Not in Steam's list; A2S_INFO fills it in.
         password: false,
@@ -159,6 +159,10 @@ fn convert(s: ListServer) -> Option<Server> {
         queue: tags.queue,
         mods: Vec::new(),
         modded: tags.modded,
+        official: tags.official(),
+        day_speed: tags.day_speed,
+        night_speed: tags.night_speed(),
+        country: None,
     })
 }
 

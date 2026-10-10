@@ -6,6 +6,7 @@
 mod a2s;
 mod address;
 mod dzsa;
+mod geo;
 mod http;
 mod launch;
 mod mods;
@@ -15,6 +16,7 @@ mod server;
 mod settings;
 mod steam;
 mod steam_api;
+mod suspect;
 mod ui;
 mod update;
 mod vdf;

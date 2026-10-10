@@ -14,6 +14,8 @@ mod details;
 mod filters;
 mod join;
 mod list;
+mod more_filters;
+mod screening;
 mod settings;
 mod updates;
 
@@ -51,6 +53,9 @@ const PING_JITTER: u32 = 30;
 /// running with the setting off.
 static OVERLAY_SWITCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// A server found by address makes `Found` the biggest by far, but messages are few, so their size
+// doesn't matter.
+#[allow(clippy::large_enum_variant)]
 pub enum Msg {
     List {
         source: Source,
@@ -75,6 +80,8 @@ pub enum Msg {
         result: Result<Found, String>,
         then: Then,
     },
+    /// The country database and lookups.
+    Screen(screening::ScreenMsg),
 }
 
 /// What a server looked up by address is for.
@@ -183,6 +190,8 @@ pub struct App {
     toast: Option<(String, Instant)>,
     update: updates::UpdateStatus,
     last_update_check: Option<Instant>,
+    /// Servers' countries, and the likely-fakes check.
+    screen: screening::Screening,
 }
 
 impl App {
@@ -251,8 +260,10 @@ impl App {
             toast: None,
             update: updates::UpdateStatus::Idle,
             last_update_check: None,
+            screen: screening::Screening::default(),
             settings,
         };
+        app.start_screening();
         app.load_list(false);
         app.check_overlay(true);
         app.read_game_version();
@@ -295,13 +306,16 @@ impl App {
             players: info.map(|i| (i.players, i.max_players)),
             // An answer without a queue tag means nobody is queued.
             queue: tags.as_ref().map(|t| t.queue.unwrap_or(0)),
-            time: tags.and_then(|t| t.time),
+            time: tags.as_ref().and_then(|t| t.time.clone()),
             locked: info.is_some_and(|i| i.password),
             favorite: self.state.is_favorite(&addr),
             same_version: self
                 .game_version
                 .as_deref()
                 .and_then(|game| version::same(game, version)),
+            battleye: tags.as_ref().map(|t| t.battleye),
+            day_speed: tags.as_ref().and_then(|t| t.day_speed),
+            suspect: self.hidden_as_suspect(&addr),
         }
     }
 
@@ -486,6 +500,8 @@ impl App {
                         seen.queue.or(s.queue),
                         seen.same_version,
                         seen.locked,
+                        seen.time.as_deref().and_then(server::is_day),
+                        seen.battleye,
                     ))
                 };
                 let before = counts(self);
@@ -499,6 +515,7 @@ impl App {
                     live.info = pong.info;
                 }
                 live.at = Some(Instant::now());
+                self.screen_answer(&pong.addr);
                 let counts_changed = self.answer_matters() && counts(self) != before;
                 if (self.ping_matters() && ping_moved) || counts_changed {
                     // Not straight away: rows moving under the pointer make the list unusable.
@@ -568,6 +585,7 @@ impl App {
             }
             Msg::Found { addr, result, then } => self.found(&addr, result, then),
             Msg::Update(msg) => self.update_msg(msg),
+            Msg::Screen(msg) => self.screen_msg(msg),
         }
     }
 
@@ -710,6 +728,7 @@ impl App {
         let mut maps: Vec<MapChoice> = counts.into_values().collect();
         maps.sort_by(|a, b| b.servers.cmp(&a.servers).then_with(|| a.key.cmp(&b.key)));
         self.maps = maps;
+        self.screen_servers();
         self.view_dirty = true;
         self.ping_sweep();
     }
@@ -732,6 +751,12 @@ impl App {
             || f.max_players > 0
             || f.min_slots > 0
             || f.max_slots > 0
+            || f.battleye_only
+            || f.daytime != server::Daytime::Any
+            || f.hide_low_population
+            || f.min_speed > 0
+            || f.max_speed > 0
+            || !f.show_suspect
     }
 
     /// When sorting or filtering by ping, pings every server that passes the other filters (in
@@ -804,6 +829,7 @@ impl App {
     }
 
     fn rebuild_view(&mut self) {
+        self.screen_flags();
         let filters = &self.state.filters;
         let seen: Vec<Seen> = self.servers.iter().map(|s| self.seen(s)).collect();
         let mut view: Vec<usize> = self

@@ -1,5 +1,6 @@
 //! The filters panel on the left: the map filter with its search, the checkboxes, perspective
-//! and mods, the player, size and ping limits, Reset, and the Recent servers.
+//! and mods, the player, size and ping limits, More filters (in `more_filters`), Reset, and the
+//! Recent servers.
 
 use eframe::egui::{self, RichText};
 
@@ -170,7 +171,10 @@ impl App {
                 ui.end_row();
             });
         ui.add_space(6.0);
+        changed |= self.more_filters(ui);
+        ui.add_space(6.0);
         if ui.button("Reset filters").clicked() {
+            let f = &mut self.state.filters;
             *f = Filters {
                 search: std::mem::take(&mut f.search),
                 ..Default::default()
@@ -208,7 +212,7 @@ impl App {
 }
 
 /// A "from … to …" pair of limits, where 0 means no limit. Moving one past the other moves both.
-fn range(ui: &mut egui::Ui, min: &mut u32, max: &mut u32) -> bool {
+pub(super) fn range(ui: &mut egui::Ui, min: &mut u32, max: &mut u32) -> bool {
     let any = |v: f64, _| {
         if v == 0.0 {
             "any".to_string()

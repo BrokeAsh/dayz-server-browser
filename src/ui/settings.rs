@@ -1,5 +1,6 @@
 //! The settings window: which server list to use, the Steam Web API key, extra launch arguments,
-//! the DayZ folder, the map overlay (on or off, and its hotkey), and servers added by address.
+//! the DayZ folder, the map overlay (on or off, and its hotkey), servers added by address, and the
+//! credit for the country data.
 
 use eframe::egui::{self, RichText};
 use std::path::PathBuf;
@@ -86,6 +87,8 @@ impl App {
                     ui.separator();
                     self.added_section(ui);
                 }
+                ui.separator();
+                self.country_credits(ui);
             });
         if !open {
             self.settings.extra_args = window.extra_args.clone();

@@ -5,6 +5,7 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
 use super::{App, ERROR, FAIR, GOOD, Live, PING_AGAIN};
+use crate::geo;
 use crate::server::{SortBy, map_title};
 use crate::settings::COLUMNS;
 
@@ -97,6 +98,7 @@ impl App {
                 head(&mut header, "Time", SortBy::Time);
                 head(&mut header, "Ping", SortBy::Ping);
                 head(&mut header, "Mods", SortBy::Mods);
+                head(&mut header, "Country", SortBy::Country);
                 header.col(|ui| {
                     let color = ui.visuals().strong_text_color();
                     padlock(ui, color).on_hover_text("Needs a password");
@@ -176,6 +178,12 @@ impl App {
                             String::new()
                         };
                         ui.label(text);
+                    });
+                    row.col(|ui| {
+                        if let Some(code) = &s.country {
+                            ui.label(code)
+                                .on_hover_text(geo::name(code).unwrap_or(code));
+                        }
                     });
                     row.col(|ui| {
                         if s.password || seen.locked {

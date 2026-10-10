@@ -173,7 +173,9 @@ impl App {
                 row(ui, "BattlEye", if battleye { "Yes" } else { "No" }.into());
                 let locked = s.password || info.as_ref().is_some_and(|i| i.password);
                 row(ui, "Password", if locked { "Yes" } else { "No" }.into());
+                self.more_details(ui, &s, tags.as_ref());
             });
+        self.suspect_note(ui, &addr);
 
         ui.add_space(10.0);
         let (mods, origin) = self.mods_for(&s);

@@ -94,24 +94,29 @@ pub struct State {
     pub favorites: Vec<String>,
     /// Most recent first.
     pub recent: Vec<Recent>,
-    /// Widths of the list's Map, Players, Queue, Time, Ping, and Mods columns; the server name
-    /// takes the rest.
+    /// Widths of the list's Map, Players, Queue, Time, Ping, Mods, and Country columns; the
+    /// server name takes the rest.
     #[serde(deserialize_with = "columns")]
-    pub columns: [f32; 6],
+    pub columns: [f32; 7],
     /// Servers added by address (`ip:query_port`), which the list may not include.
     pub added: Vec<String>,
 }
 
-pub const COLUMNS: [f32; 6] = [100.0, 64.0, 48.0, 48.0, 44.0, 44.0];
+pub const COLUMNS: [f32; 7] = [100.0, 64.0, 48.0, 48.0, 44.0, 44.0, 56.0];
 
-/// Reads the column widths, including those saved before the Queue column (which gets its
-/// default); anything else odd gives the defaults rather than failing the whole state.
-fn columns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 6], D::Error> {
+/// Reads the column widths, including those saved before the Queue column or the Country column
+/// (which get their defaults); anything else odd gives the defaults rather than failing the
+/// whole state.
+fn columns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 7], D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     let widths: Vec<f32> = serde_json::from_value(value).unwrap_or_default();
+    let country = COLUMNS[6];
     Ok(match widths[..] {
-        [map, players, queue, time, ping, mods] => [map, players, queue, time, ping, mods],
-        [map, players, time, ping, mods] => [map, players, COLUMNS[2], time, ping, mods],
+        [map, players, queue, time, ping, mods, country] => {
+            [map, players, queue, time, ping, mods, country]
+        }
+        [map, players, queue, time, ping, mods] => [map, players, queue, time, ping, mods, country],
+        [map, players, time, ping, mods] => [map, players, COLUMNS[2], time, ping, mods, country],
         _ => COLUMNS,
     })
 }
@@ -213,11 +218,56 @@ mod tests {
         let state: State =
             serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"],"columns":[200,80,48,64,44]}"#)
                 .unwrap();
-        assert_eq!(state.columns, [200.0, 80.0, COLUMNS[2], 48.0, 64.0, 44.0]);
+        assert_eq!(
+            state.columns,
+            [200.0, 80.0, COLUMNS[2], 48.0, 64.0, 44.0, COLUMNS[6]]
+        );
         assert_eq!(state.favorites, ["1.2.3.4:2303"]);
         let state: State =
             serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"],"columns":"wide"}"#).unwrap();
         assert_eq!(state.columns, COLUMNS);
         assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+        // Saved before the Country column.
+        let state: State = serde_json::from_str(r#"{"columns":[120,70,50,52,40,40]}"#).unwrap();
+        assert_eq!(
+            state.columns,
+            [120.0, 70.0, 50.0, 52.0, 40.0, 40.0, COLUMNS[6]]
+        );
+        let state: State = serde_json::from_str(r#"{"columns":[1,2,3,4,5,6,7]}"#).unwrap();
+        assert_eq!(state.columns, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn reads_filters_from_before_the_more_filters() {
+        use crate::server::{Daytime, Kind};
+        // A state file from 0.1.0: the new filters get their defaults, fakes hidden.
+        let state: State = serde_json::from_str(
+            r#"{"filters":{"search":"pvp","maps":["livonia"],"hide_empty":true,"max_ping":80},
+                "sort":"Players","sort_descending":true,"columns":[100,64,48,48,44,44]}"#,
+        )
+        .unwrap();
+        let f = &state.filters;
+        assert_eq!(
+            (f.search.as_str(), f.hide_empty, f.max_ping),
+            ("pvp", true, 80)
+        );
+        assert_eq!((f.kind, f.daytime), (Kind::Any, Daytime::Any));
+        assert!(f.countries.is_empty() && !f.battleye_only && !f.hide_low_population);
+        assert_eq!((f.min_speed, f.max_speed), (0, 0));
+        assert!(!f.show_suspect);
+        // Choices this version doesn't know, and odd country codes, don't lose the rest.
+        let state: State = serde_json::from_str(
+            r#"{"favorites":["1.2.3.4:2303"],"filters":{"kind":"Modern","daytime":"Night",
+                "countries":["de","DE","usa",5,"fr"],"battleye_only":true}}"#,
+        )
+        .unwrap();
+        let f = &state.filters;
+        assert_eq!((f.kind, f.daytime), (Kind::Any, Daytime::Night));
+        assert_eq!(f.countries, ["DE", "FR"]);
+        assert!(f.battleye_only);
+        assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+        // And what this version saves reads back the same.
+        let again: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(again.filters, state.filters);
     }
 }
