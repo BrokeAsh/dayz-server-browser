@@ -3,8 +3,8 @@
 //! port: most often the game port + 1, or 27016. So this asks the likely ones at once and keeps
 //! the server that says it plays on the typed port.
 
-use anyhow::{Context, Result, bail};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use anyhow::{Context, Result, anyhow, bail};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::a2s::{self, Info};
@@ -37,6 +37,10 @@ pub fn parse(text: &str) -> Result<(IpAddr, u16)> {
         ),
         None => (text, DEFAULT_PORT),
     };
+    // The system would read "1.2.3" as 1.2.0.3, which is never what was meant.
+    if host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.parse::<Ipv4Addr>().is_err() {
+        bail!("{host} isn't a whole IP address (it has four numbers, such as 203.0.113.5)");
+    }
     let ip = (host, port)
         .to_socket_addrs()
         .with_context(|| format!("couldn't find {host}"))?
@@ -93,7 +97,13 @@ pub fn find(ip: IpAddr, port: u16) -> Result<Found> {
 /// Asks a server whose query address (`ip:query_port`) is known.
 pub fn query(addr: &str) -> Result<Found> {
     let target = a2s::resolve(addr)?;
-    let (info, took) = a2s::info(target, TIMEOUT)?;
+    let (info, took) = a2s::info(target, TIMEOUT).map_err(|e| {
+        if a2s::no_answer(&e) {
+            anyhow!("it didn't answer within {} seconds", TIMEOUT.as_secs())
+        } else {
+            e.context("couldn't ask it")
+        }
+    })?;
     Ok(found(target.ip(), target.port(), info, took))
 }
 
@@ -140,5 +150,18 @@ mod tests {
         assert!(parse("203.0.113.5:port").is_err());
         assert!(parse("203.0.113.5:0").is_err());
         assert!(parse("").is_err());
+        // Not read as 1.2.0.3.
+        assert!(parse("1.2.3:2302").is_err());
+        assert!(parse("1.2.3.4.5").is_err());
+    }
+
+    #[test]
+    fn says_when_a_server_doesnt_answer() {
+        // Nothing answers queries on a fresh socket's port.
+        let quiet = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let e = query(&quiet.local_addr().unwrap().to_string())
+            .err()
+            .unwrap();
+        assert_eq!(e.to_string(), "it didn't answer within 2 seconds");
     }
 }

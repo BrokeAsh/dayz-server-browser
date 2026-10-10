@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, RichText, Sense};
 
-use super::{App, ERROR, Fetch, Then, WARN, open_workshop, state_badge};
+use super::{App, ERROR, Fetch, Then, WARN, open_workshop, sentence, state_badge};
 use crate::a2s::{self, Info};
 use crate::server::{Server, map_title};
 
@@ -86,7 +86,7 @@ impl App {
         if let Some((failed, e)) = &self.lookup_failed
             && failed == addr
         {
-            ui.label(RichText::new(format!("It didn't answer: {e}")).color(ERROR));
+            ui.label(RichText::new(sentence(e)).color(ERROR));
         }
         ui.horizontal_wrapped(|ui| {
             if ui.button("Ask the server").clicked() {

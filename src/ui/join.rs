@@ -383,56 +383,65 @@ impl App {
             super::windows::to_front(ctx, id);
         }
         let mut open = true;
+        // Room below the top bar for the title, the buttons, and the status bar.
+        let tallest = (ctx.content_rect().height() - 190.0).max(150.0);
         super::windows::placed(egui::Window::new("Join server"), ctx, id, 480.0)
             .collapsible(false)
             .resizable(true)
             .default_width(480.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                switch_prompt(ui, join, &mut action);
-                let server = &view.server;
-                ui.label(RichText::new(&server.name).strong().size(16.0));
-                let (players, slots) = (view.players, view.slots);
-                ui.label(
-                    RichText::new(match view.queue {
-                        Some(q) => format!("{} · {players}/{slots} players · {q} in queue", map_title(&server.map)),
-                        None => format!("{} · {players}/{slots} players", map_title(&server.map)),
-                    })
-                    .weak(),
-                );
-                ui.add_space(8.0);
-                mods_section(ui, &view, join, &mut action);
-                download_section(ui, &view, join, &mut action);
-                ui.add_space(8.0);
-                if view.locked {
-                    ui.horizontal(|ui| {
-                        ui.label("Password");
-                        ui.add(egui::TextEdit::singleline(&mut join.password).password(true).desired_width(200.0));
-                    });
-                }
-                if let Some((theirs, yours)) = &view.other_version {
+                // In a short window everything above the buttons scrolls, so Launch always shows.
+                egui::ScrollArea::vertical()
+                    .id_salt("join-body")
+                    .max_height(tallest)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                    switch_prompt(ui, join, &mut action);
+                    let server = &view.server;
+                    ui.label(RichText::new(&server.name).strong().size(16.0));
+                    let (players, slots) = (view.players, view.slots);
                     ui.label(
-                        RichText::new(format!(
-                            "This server runs DayZ {theirs}, and you have {yours}. DayZ won't join a server \
-                             on another version."
-                        ))
-                        .color(WARN),
+                        RichText::new(match view.queue {
+                            Some(q) => format!("{} · {players}/{slots} players · {q} in queue", map_title(&server.map)),
+                            None => format!("{} · {players}/{slots} players", map_title(&server.map)),
+                        })
+                        .weak(),
                     );
-                }
-                wait_section(ui, &view, join, wait_blocker.as_deref(), &mut action);
-                if join.game_running {
-                    ui.label(RichText::new("DayZ is already running; close it first.").color(WARN));
-                }
-                if let Some(e) = &view.install_error {
-                    ui.label(RichText::new(super::sentence(e)).color(ERROR));
-                }
-                if view.outdated > 0 && view.missing == 0 && !join.downloading() {
-                    ui.label(RichText::new("Some mods have updates; joining may fail until they're updated.").weak().small());
-                }
-                if let Some((message, error)) = &join.message {
-                    let color = if *error { ERROR } else { ui.visuals().text_color() };
-                    ui.label(RichText::new(super::sentence(message)).color(color));
-                }
+                    ui.add_space(8.0);
+                    mods_section(ui, &view, join, &mut action);
+                    download_section(ui, &view, join, &mut action);
+                    ui.add_space(8.0);
+                    if view.locked {
+                        ui.horizontal(|ui| {
+                            ui.label("Password");
+                            ui.add(egui::TextEdit::singleline(&mut join.password).password(true).desired_width(200.0));
+                        });
+                    }
+                    if let Some((theirs, yours)) = &view.other_version {
+                        ui.label(
+                            RichText::new(format!(
+                                "This server runs DayZ {theirs}, and you have {yours}. DayZ won't join a server \
+                                 on another version."
+                            ))
+                            .color(WARN),
+                        );
+                    }
+                    wait_section(ui, &view, join, wait_blocker.as_deref(), &mut action);
+                    if join.game_running {
+                        ui.label(RichText::new("DayZ is already running; close it first.").color(WARN));
+                    }
+                    if let Some(e) = &view.install_error {
+                        ui.label(RichText::new(super::sentence(e)).color(ERROR));
+                    }
+                    if view.outdated > 0 && view.missing == 0 && !join.downloading() {
+                        ui.label(RichText::new("Some mods have updates; joining may fail until they're updated.").weak().small());
+                    }
+                    if let Some((message, error)) = &join.message {
+                        let color = if *error { ERROR } else { ui.visuals().text_color() };
+                        ui.label(RichText::new(super::sentence(message)).color(color));
+                    }
+                    });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let launch = ui

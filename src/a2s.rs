@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, VecDeque};
+use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -165,6 +166,21 @@ fn request(
     bail!("the server kept sending challenges")
 }
 
+/// Whether a query failed because nothing answered in time, or nothing listens at the address.
+pub fn no_answer(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<io::Error>().is_some_and(|e| {
+            matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionReset
+            )
+        })
+    })
+}
+
 /// One reply, reassembled if the server split it over several packets, by `deadline`.
 fn receive(socket: &UdpSocket, deadline: Instant) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; 65536];
@@ -173,7 +189,7 @@ fn receive(socket: &UdpSocket, deadline: Instant) -> Result<Vec<u8>> {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            bail!("timed out");
+            return Err(io::Error::from(io::ErrorKind::TimedOut).into());
         }
         socket.set_read_timeout(Some(left))?;
         let len = socket.recv(&mut buf)?;

@@ -105,10 +105,16 @@ impl App {
                 )
             })
             .inner;
-        if std::mem::take(&mut draft.focus) {
-            response.request_focus();
-            // The details panel may be scrolled past it.
-            response.scroll_to_me(None);
+        // Asked for until the field has it: focus asked for in the frame the button was clicked
+        // doesn't stay.
+        if draft.focus {
+            if response.has_focus() {
+                draft.focus = false;
+            } else {
+                response.request_focus();
+                // The details panel may be scrolled past it.
+                response.scroll_to_me(None);
+            }
         }
         if response.lost_focus() {
             self.commit_note();
