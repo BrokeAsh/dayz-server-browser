@@ -90,24 +90,18 @@ impl App {
         };
         let before = self.settings.clone();
         let mut open = true;
+        // With the Steam key and servers added by address, it can be taller than a small window.
+        let tallest = (ctx.content_rect().height() - 120.0).max(200.0);
         egui::Window::new("Settings")
             .collapsible(false)
             .resizable(false)
             .default_width(480.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                self.list_section(ui, &mut window);
-                ui.separator();
-                self.launch_section(ui, &mut window);
-                ui.separator();
-                self.overlay_section(ui, &mut window);
-                ui.separator();
-                self.updates_section(ui, &window);
-                self.discord_section(ui);
-                if !self.state.added.is_empty() {
-                    ui.separator();
-                    self.added_section(ui);
-                }
+                egui::ScrollArea::vertical()
+                    .max_height(tallest)
+                    .min_scrolled_height(tallest)
+                    .show(ui, |ui| self.settings_sections(ui, &mut window));
             });
         if !open {
             window.apply_pending(&mut self.settings);
@@ -119,6 +113,21 @@ impl App {
         }
         if open {
             self.settings_window = Some(window);
+        }
+    }
+
+    fn settings_sections(&mut self, ui: &mut egui::Ui, window: &mut SettingsWindow) {
+        self.list_section(ui, window);
+        ui.separator();
+        self.launch_section(ui, window);
+        ui.separator();
+        self.overlay_section(ui, window);
+        ui.separator();
+        self.updates_section(ui, window);
+        self.discord_section(ui);
+        if !self.state.added.is_empty() {
+            ui.separator();
+            self.added_section(ui);
         }
     }
 
