@@ -40,6 +40,10 @@ const RESORT_EVERY: Duration = Duration::from_secs(4);
 /// so ordinary jitter doesn't shuffle the list.
 const PING_JITTER: u32 = 30;
 
+/// Held while the overlay is started or stopped, so turning it on and off quickly can't leave it
+/// running with the setting off.
+static OVERLAY_SWITCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub enum Msg {
     List {
         source: Source,
@@ -396,6 +400,7 @@ impl App {
         };
         self.overlay = OverlayStatus::Checking;
         self.spawn(move || {
+            let _switching = OVERLAY_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
             if overlay::is_running(&program) {
                 return Msg::Overlay(OverlayStatus::Running);
             }
@@ -415,6 +420,21 @@ impl App {
             Msg::Overlay(OverlayStatus::Failed(
                 "started, but it didn't answer".into(),
             ))
+        });
+    }
+
+    /// Quits the overlay, in the background: for when it's turned off in the settings.
+    fn stop_overlay(&mut self) {
+        self.overlay = OverlayStatus::Off;
+        let Some(program) = overlay::program() else {
+            return;
+        };
+        self.spawn(move || {
+            let _switching = OVERLAY_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
+            match overlay::quit(&program) {
+                Ok(()) => Msg::Overlay(OverlayStatus::Off),
+                Err(e) => Msg::Overlay(OverlayStatus::Failed(format!("{e:#}"))),
+            }
         });
     }
 

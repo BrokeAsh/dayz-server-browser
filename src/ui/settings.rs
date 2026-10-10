@@ -289,7 +289,11 @@ impl App {
             )
             .changed()
         {
-            self.check_overlay(true);
+            if self.settings.overlay {
+                self.check_overlay(true);
+            } else {
+                self.stop_overlay();
+            }
         }
         if overlay::program().is_none() {
             ui.label(
