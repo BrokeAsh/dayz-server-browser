@@ -240,6 +240,10 @@ pub fn disagree(listed: u32, answered: u32) -> bool {
 /// One answer with far fewer players than the list isn't enough: the server may have just
 /// restarted, dropping everyone. It counts once its answers have kept disagreeing for this long.
 const CONFIRM_AFTER: Duration = Duration::from_secs(120);
+/// A disagreement is forgotten this long after the last answer that disagreed. A hidden server
+/// isn't on screen to be asked again, so this brings it back to be asked: after a restart, its
+/// players may have returned. Longer than the gap between pings of a server on screen.
+const FORGET_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// Servers whose answers disagree with the list, by `ip:query_port`.
 #[derive(Debug, Default)]
@@ -249,43 +253,73 @@ pub struct Disagreements(HashMap<String, Disagreement>);
 struct Disagreement {
     /// The list's count the answers disagreed with.
     listed: u32,
+    /// The first and the latest answer that disagreed.
     since: Instant,
+    last: Instant,
     confirmed: bool,
+}
+
+impl Disagreement {
+    fn new(listed: u32, now: Instant) -> Self {
+        Self {
+            listed,
+            since: now,
+            last: now,
+            confirmed: false,
+        }
+    }
+
+    fn forgotten(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.last) >= FORGET_AFTER
+    }
 }
 
 impl Disagreements {
     /// Notes an answer from a listed server: `listed` players in the list, `answered` in its
-    /// answer.
-    pub fn answer(&mut self, addr: &str, listed: u32, answered: u32, now: Instant) {
+    /// answer. `compare`: whether the list is fresh enough to hold the answer against; an answer
+    /// that agrees clears a disagreement either way.
+    pub fn answer(&mut self, addr: &str, listed: u32, answered: u32, compare: bool, now: Instant) {
         if !disagree(listed, answered) {
             self.0.remove(addr);
             return;
         }
-        let entry = self.0.entry(addr.to_string()).or_insert(Disagreement {
-            listed,
-            since: now,
-            confirmed: false,
-        });
-        if entry.listed != listed {
-            // A new list with another count: start over.
-            *entry = Disagreement {
-                listed,
-                since: now,
-                confirmed: false,
-            };
+        if !compare {
+            return;
         }
+        let entry = self
+            .0
+            .entry(addr.to_string())
+            .or_insert_with(|| Disagreement::new(listed, now));
+        // A new list with another count, or the old disagreement forgotten: start over.
+        if entry.listed != listed || entry.forgotten(now) {
+            *entry = Disagreement::new(listed, now);
+        }
+        entry.last = now;
         if now.saturating_duration_since(entry.since) >= CONFIRM_AFTER {
             entry.confirmed = true;
         }
     }
 
-    /// Whether a server's answers have kept disagreeing with the list's count, `listed`. Once the
-    /// list says something else (it was refreshed), they no longer count until they disagree
-    /// again, so a hidden server comes back to be asked again.
-    pub fn confirmed(&self, addr: &str, listed: u32) -> bool {
+    /// Whether a server's answers have kept disagreeing with the list's count, `listed`, lately.
+    /// Once the list says something else (it was refreshed), or a while after the last answer
+    /// that disagreed, they no longer count until they disagree again: a hidden server comes back
+    /// to be asked again.
+    pub fn confirmed(&self, addr: &str, listed: u32, now: Instant) -> bool {
         self.0
             .get(addr)
-            .is_some_and(|d| d.confirmed && d.listed == listed)
+            .is_some_and(|d| d.confirmed && d.listed == listed && !d.forgotten(now))
+    }
+
+    /// Drops the disagreements forgotten by now; returns whether one of them hid a server, so
+    /// the list should be filtered again.
+    pub fn forget_old(&mut self, now: Instant) -> bool {
+        let mut hid = false;
+        self.0.retain(|_, d| {
+            let forgotten = d.forgotten(now);
+            hid |= forgotten && d.confirmed;
+            !forgotten
+        });
+        hid
     }
 }
 
@@ -450,23 +484,51 @@ mod tests {
         assert!(!disagree(15, 0), "small servers empty out for real");
         assert!(!disagree(10, 40));
         let start = Instant::now();
+        let at = |secs: u64| start + Duration::from_secs(secs);
         let mut d = Disagreements::default();
-        d.answer("a", 60, 2, start);
-        assert!(!d.confirmed("a", 60), "one answer could be a restart");
-        d.answer("a", 60, 3, start + Duration::from_secs(60));
-        assert!(!d.confirmed("a", 60));
-        d.answer("a", 60, 3, start + Duration::from_secs(150));
-        assert!(d.confirmed("a", 60));
-        // An answer that agrees clears it.
-        d.answer("a", 60, 50, start + Duration::from_secs(200));
-        assert!(!d.confirmed("a", 60));
-        d.answer("b", 60, 1, start);
-        d.answer("b", 60, 1, start + CONFIRM_AFTER);
-        assert!(d.confirmed("b", 60));
+        d.answer("a", 60, 2, true, start);
+        assert!(!d.confirmed("a", 60, start), "one answer could be a restart");
+        d.answer("a", 60, 3, true, at(60));
+        assert!(!d.confirmed("a", 60, at(60)));
+        d.answer("a", 60, 3, true, at(150));
+        assert!(d.confirmed("a", 60, at(150)));
+        // An answer that agrees clears it, even once the list is too old to compare with.
+        d.answer("a", 60, 50, false, at(200));
+        assert!(!d.confirmed("a", 60, at(200)));
+        d.answer("b", 60, 1, true, start);
+        d.answer("b", 60, 1, true, start + CONFIRM_AFTER);
+        assert!(d.confirmed("b", 60, start + CONFIRM_AFTER));
         // A refreshed list with another count doesn't keep it hidden, and starts over.
-        assert!(!d.confirmed("b", 58));
-        d.answer("b", 58, 1, start + CONFIRM_AFTER * 2);
-        assert!(!d.confirmed("b", 58));
+        assert!(!d.confirmed("b", 58, start + CONFIRM_AFTER));
+        d.answer("b", 58, 1, true, start + CONFIRM_AFTER * 2);
+        assert!(!d.confirmed("b", 58, start + CONFIRM_AFTER * 2));
+        // An old list's count isn't held against an answer.
+        d.answer("c", 60, 1, false, start);
+        d.answer("c", 60, 1, false, start + CONFIRM_AFTER);
+        assert!(!d.confirmed("c", 60, start + CONFIRM_AFTER));
+
+        // Listed 60/60, then a restart: two answers of 5 far apart hide it, but not for good,
+        // since a hidden server isn't asked again (and a refresh may keep the count).
+        d.answer("r", 60, 5, true, start);
+        d.answer("r", 60, 5, true, at(180));
+        assert!(d.confirmed("r", 60, at(180)));
+        assert!(d.confirmed("r", 60, at(180) + FORGET_AFTER / 2));
+        let later = at(180) + FORGET_AFTER;
+        assert!(!d.confirmed("r", 60, later), "forgotten after a while");
+        // Asked again: one disagreeing answer alone doesn't hide it again.
+        d.answer("r", 60, 6, true, later);
+        assert!(!d.confirmed("r", 60, later), "starts over");
+        d.answer("r", 60, 40, true, later + CONFIRM_AFTER);
+        assert!(!d.confirmed("r", 60, later + CONFIRM_AFTER), "players came back");
+        // Forgotten ones are dropped, saying whether one hid a server.
+        d.answer("s", 60, 1, true, start);
+        d.answer("s", 60, 1, true, start + CONFIRM_AFTER);
+        d.answer("t", 60, 1, true, start + CONFIRM_AFTER);
+        assert!(!d.forget_old(start + CONFIRM_AFTER));
+        assert!(d.forget_old(start + CONFIRM_AFTER + FORGET_AFTER));
+        assert!(d.0.contains_key("b"), "answered later");
+        assert!(!d.forget_old(start + CONFIRM_AFTER * 2 + FORGET_AFTER), "b wasn't confirmed");
+        assert!(d.0.is_empty());
 
         let servers = [server("A", "203.0.113.1", 2302, 60)];
         let answers = [Answer {

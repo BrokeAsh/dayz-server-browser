@@ -176,8 +176,13 @@ impl App {
         self.look_up_countries();
     }
 
-    /// After a listed server answered: notes whether its count disagrees with the list's.
+    /// After a listed server answered: notes whether its count disagrees with the list's. Only
+    /// a fresh list's count is held against it, but an answer that agrees always clears it.
+    /// Servers hidden for disagreeing a while ago come back, to be asked again.
     pub(super) fn screen_answer(&mut self, addr: &str) {
+        if self.screen.disagreements.forget_old(Instant::now()) {
+            self.pending_resort = true;
+        }
         let fresh = self
             .list
             .fetched
@@ -186,7 +191,7 @@ impl App {
             return;
         };
         // A server added by address is listed as it answered.
-        if !fresh || i >= self.listed {
+        if i >= self.listed {
             return;
         }
         if let Some(info) = self.live.get(addr).and_then(|l| l.info.as_ref()) {
@@ -194,9 +199,23 @@ impl App {
                 addr,
                 self.servers[i].players,
                 info.players,
+                fresh,
                 Instant::now(),
             );
         }
+    }
+
+    /// What the likely-fakes rules read from a server's answers besides its numbers: whether it
+    /// was asked and didn't answer, and whether its answers disagree with the list.
+    pub(super) fn screen_answer_state(&self, s: &Server) -> (bool, bool) {
+        let addr = s.addr();
+        let live = self.live.get(&addr);
+        (
+            live.is_some_and(|l| l.at.is_some() && l.ping.is_none()),
+            self.screen
+                .disagreements
+                .confirmed(&addr, s.players, Instant::now()),
+        )
     }
 
     /// Runs the likely-fake rules over the list with the latest answers, before the view is
@@ -206,15 +225,14 @@ impl App {
             .servers
             .iter()
             .map(|s| {
-                let addr = s.addr();
-                let live = self.live.get(&addr);
-                let info = live.and_then(|l| l.info.as_ref());
+                let info = self.live.get(&s.addr()).and_then(|l| l.info.as_ref());
+                let (silent, disagrees) = self.screen_answer_state(s);
                 Answer {
-                    silent: live.is_some_and(|l| l.at.is_some() && l.ping.is_none()),
+                    silent,
                     players: info.map(|i| (i.players, i.max_players)),
                     // An answer without a queue tag means nobody is queued.
                     queue: info.map(|i| a2s::parse_tags(&i.keywords).queue.unwrap_or(0)),
-                    disagrees: self.screen.disagreements.confirmed(&addr, s.players),
+                    disagrees,
                 }
             })
             .collect();

@@ -29,33 +29,48 @@ pub enum Source {
     Steam,
 }
 
+/// Every field reads leniently, so one odd value (say, edited by hand) gives that setting's
+/// default rather than losing the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(deserialize_with = "lenient")]
     pub source: Source,
     /// Added to every launch, written as on a command line (quotes allowed).
+    #[serde(deserialize_with = "lenient")]
     pub extra_args: String,
     /// Run the DayZ map overlay alongside the game.
+    #[serde(deserialize_with = "on_unless_off")]
     pub overlay: bool,
     /// The DayZ folder; found through Steam when unset.
+    #[serde(deserialize_with = "lenient")]
     pub game_dir: Option<PathBuf>,
     /// Look for a new version of the browser at start.
+    #[serde(deserialize_with = "on_unless_off")]
     pub check_updates: bool,
     /// Show the server being played in Discord (when the browser has a Discord application).
+    #[serde(deserialize_with = "on_unless_off")]
     pub discord_presence: bool,
     /// The name to play under (`-name=`); empty leaves it to DayZ.
+    #[serde(deserialize_with = "lenient")]
     pub name: String,
     /// `-nosplash -skipIntro`.
+    #[serde(deserialize_with = "lenient")]
     pub skip_intro: bool,
     /// `-noPause`: keep running when the game loses focus.
+    #[serde(deserialize_with = "lenient")]
     pub no_pause: bool,
     /// `-window`.
+    #[serde(deserialize_with = "lenient")]
     pub windowed: bool,
     /// `-world=empty`: a plain main menu, which loads faster.
+    #[serde(deserialize_with = "lenient")]
     pub empty_world: bool,
     /// `-cpuCount=`, when set.
+    #[serde(deserialize_with = "lenient")]
     pub cpu_count: Option<u32>,
     /// Desktop notifications from the watch list play a sound.
+    #[serde(deserialize_with = "on_unless_off")]
     pub notify_sound: bool,
 }
 
@@ -109,29 +124,38 @@ pub struct Recent {
     pub joined: u64,
 }
 
+/// Every field reads leniently (lists entry by entry), so an odd value (such as one a newer
+/// version saved) doesn't lose the favorites, recent servers, notes, and watch list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
+    #[serde(deserialize_with = "lenient")]
     pub filters: Filters,
+    #[serde(deserialize_with = "lenient")]
     pub sort: SortBy,
+    #[serde(deserialize_with = "on_unless_off")]
     pub sort_descending: bool,
     /// `ip:query_port` of each favorite.
+    #[serde(deserialize_with = "lenient_list")]
     pub favorites: Vec<String>,
     /// Most recent first.
+    #[serde(deserialize_with = "lenient_list")]
     pub recent: Vec<Recent>,
     /// Widths of the list's Map, Players, Queue, Time, Ping, Mods, and Country columns; the
     /// server name takes the rest.
     #[serde(deserialize_with = "columns")]
     pub columns: [f32; 7],
     /// Servers added by address (`ip:query_port`), which the list may not include.
+    #[serde(deserialize_with = "lenient_list")]
     pub added: Vec<String>,
     /// The date (Unix time) of the newest DayZ news post the user has seen.
-    #[serde(deserialize_with = "lenient_u64")]
+    #[serde(deserialize_with = "lenient")]
     pub news_seen: u64,
     /// The user's notes on servers, by `ip:query_port`.
     #[serde(deserialize_with = "notes")]
     pub notes: BTreeMap<String, String>,
     /// Servers to notify about when they have room, in the order they were added.
+    #[serde(deserialize_with = "lenient_list")]
     pub watched: Vec<Watched>,
 }
 
@@ -165,10 +189,34 @@ fn columns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 7], D::Error>
     })
 }
 
-/// Reads a number, giving 0 for anything else rather than failing the whole state.
-fn lenient_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+/// A value of the wrong kind (such as a choice a newer version saved) reads as the default,
+/// rather than losing the whole file.
+pub fn lenient<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
     let value = serde_json::Value::deserialize(d)?;
-    Ok(value.as_u64().unwrap_or(0))
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// Reads a list, skipping entries it can't read; anything but a list reads as empty.
+fn lenient_list<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let entries: Vec<serde_json::Value> = lenient(d)?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|e| serde_json::from_value(e).ok())
+        .collect())
+}
+
+/// Reads a switch that's on by default: anything but `false` leaves it on.
+fn on_unless_off<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_bool().unwrap_or(true))
 }
 
 impl Default for State {
@@ -457,6 +505,113 @@ mod tests {
             serde_json::from_str(r#"{"watched":[{"addr":"1.2.3.4:2303"}]}"#).unwrap();
         assert_eq!(state.watched[0].addr, "1.2.3.4:2303");
         assert_eq!(state.watched[0].name, "");
+    }
+
+    /// Each field of `saved` (an object) with each of a few odd values in its place.
+    fn odd_values(saved: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+        let odd = [
+            serde_json::json!(null),
+            serde_json::json!(-5),
+            serde_json::json!(2.5),
+            serde_json::json!("newer"),
+            serde_json::json!([1, "a", {"b": 2}]),
+            serde_json::json!({"Newer": {"x": 1}}),
+            serde_json::json!(true),
+        ];
+        saved
+            .as_object()
+            .expect("an object")
+            .keys()
+            .flat_map(|key| odd.iter().map(move |v| (key.clone(), v.clone())))
+            .collect()
+    }
+
+    #[test]
+    fn no_odd_value_loses_the_state() {
+        let state = State {
+            favorites: vec!["1.2.3.4:2303".into()],
+            notes: BTreeMap::from([("1.2.3.4:2303".into(), "Base".into())]),
+            ..State::default()
+        };
+        let saved = serde_json::to_value(&state).unwrap();
+        for (key, value) in odd_values(&saved) {
+            let mut edited = saved.clone();
+            edited[&key] = value.clone();
+            let read: State = serde_json::from_value(edited)
+                .unwrap_or_else(|e| panic!("{key} = {value}: {e}"));
+            if key != "favorites" {
+                assert_eq!(read.favorites, state.favorites, "{key} = {value}");
+            }
+            if key != "notes" {
+                assert_eq!(read.notes, state.notes, "{key} = {value}");
+            }
+        }
+        // And each filter.
+        let filters = serde_json::to_value(Filters::default()).unwrap();
+        for (key, value) in odd_values(&filters) {
+            let mut edited = saved.clone();
+            edited["filters"][&key] = value.clone();
+            let read: State = serde_json::from_value(edited)
+                .unwrap_or_else(|e| panic!("filters.{key} = {value}: {e}"));
+            assert_eq!(read.favorites, state.favorites, "filters.{key} = {value}");
+        }
+    }
+
+    #[test]
+    fn reads_odd_sorts_and_lists() {
+        // A sort column from a newer version gives the default, and the rest is kept; lists
+        // lose only the entries they can't read.
+        let state: State = serde_json::from_str(
+            r#"{"sort":"Rating","sort_descending":"yes","favorites":["a",5,"b"],
+                "recent":[{"addr":"1.2.3.4:2303","joined":"today"},{"addr":"5.6.7.8:2303"}],
+                "watched":[{"addr":"1.2.3.4:2303"},7,{"addr":["x"]}],"added":"oops"}"#,
+        )
+        .unwrap();
+        assert_eq!(state.sort, SortBy::Players);
+        assert!(state.sort_descending);
+        assert_eq!(state.favorites, ["a", "b"]);
+        assert_eq!(state.recent.len(), 1);
+        assert_eq!(state.recent[0].addr, "5.6.7.8:2303");
+        assert_eq!(state.watched.len(), 1);
+        assert!(state.added.is_empty());
+        let state: State =
+            serde_json::from_str(r#"{"sort":"Country","sort_descending":false}"#).unwrap();
+        assert_eq!(state.sort, SortBy::Country);
+        assert!(!state.sort_descending);
+        let state: State = serde_json::from_str(r#"{"filters":{"maps":5,"max_ping":-1}}"#).unwrap();
+        assert!(state.filters.maps.is_empty());
+        assert_eq!(state.filters.max_ping, 0);
+        let state: State = serde_json::from_str(r#"{"filters":{"maps":["enoch",3,""]}}"#).unwrap();
+        assert_eq!(state.filters.maps, ["livonia"]);
+    }
+
+    #[test]
+    fn no_odd_setting_loses_the_rest() {
+        let set = Settings {
+            name: "Survivor One".into(),
+            overlay: false,
+            ..Default::default()
+        };
+        let saved = serde_json::to_value(&set).unwrap();
+        for (key, value) in odd_values(&saved) {
+            let mut edited = saved.clone();
+            edited[&key] = value.clone();
+            // TOML has no null: settings not set are left out.
+            edited.as_object_mut().unwrap().retain(|_, v| !v.is_null());
+            let text = toml::to_string(&edited).unwrap();
+            let read: Settings =
+                toml::from_str(&text).unwrap_or_else(|e| panic!("{key} = {value}: {e}"));
+            if key != "name" {
+                assert_eq!(read.name, "Survivor One", "{key} = {value}");
+            }
+            if key != "overlay" {
+                assert!(!read.overlay, "{key} = {value}");
+            }
+        }
+        // Switches that are on unless turned off stay on for an odd value.
+        let read: Settings = toml::from_str("notify_sound = \"loud\"\ncpu_count = -2\n").unwrap();
+        assert!(read.notify_sound);
+        assert_eq!(read.cpu_count, None);
     }
 
     #[test]

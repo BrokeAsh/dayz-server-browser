@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
+use crate::settings::lenient;
+
 #[derive(Debug, Clone, Default)]
 pub struct Server {
     pub name: String,
@@ -114,45 +116,65 @@ pub enum Daytime {
     Night,
 }
 
+/// Every field reads leniently: a value of the wrong kind (such as a choice a newer version
+/// saved) gives that filter's default rather than losing the whole state.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Filters {
+    #[serde(deserialize_with = "lenient")]
     pub search: String,
     /// Maps by [`map_key`]; empty for any.
     #[serde(alias = "map", deserialize_with = "one_or_many")]
     pub maps: Vec<String>,
+    #[serde(deserialize_with = "lenient")]
     pub hide_empty: bool,
+    #[serde(deserialize_with = "lenient")]
     pub hide_full: bool,
+    #[serde(deserialize_with = "lenient")]
     pub hide_password: bool,
+    #[serde(deserialize_with = "lenient")]
     pub perspective: Perspective,
+    #[serde(deserialize_with = "lenient")]
     pub mods: ModFilter,
     /// Hide servers slower than this (ms); 0 for no limit. Servers not pinged yet stay visible.
+    #[serde(deserialize_with = "lenient")]
     pub max_ping: u32,
+    #[serde(deserialize_with = "lenient")]
     pub favorites_only: bool,
     /// Limits on players online and on server size (slots); 0 for no limit.
+    #[serde(deserialize_with = "lenient")]
     pub min_players: u32,
+    #[serde(deserialize_with = "lenient")]
     pub max_players: u32,
+    #[serde(deserialize_with = "lenient")]
     pub min_slots: u32,
+    #[serde(deserialize_with = "lenient")]
     pub max_slots: u32,
     /// Hide servers known to run a different version of the game than the one installed.
+    #[serde(deserialize_with = "lenient")]
     pub hide_other_versions: bool,
     #[serde(deserialize_with = "lenient")]
     pub kind: Kind,
+    #[serde(deserialize_with = "lenient")]
     pub battleye_only: bool,
     /// By the server's in-game time; servers whose time isn't known are hidden while it's set.
     #[serde(deserialize_with = "lenient")]
     pub daytime: Daytime,
     /// Hide servers less than 30% full.
+    #[serde(deserialize_with = "lenient")]
     pub hide_low_population: bool,
     /// Countries by upper-case ISO code; empty for any. Servers whose country isn't known yet
     /// stay visible.
     #[serde(deserialize_with = "country_codes")]
     pub countries: Vec<String>,
     /// Limits on how many times faster than real time the in-game day runs; 0 for no limit.
+    #[serde(deserialize_with = "lenient")]
     pub min_speed: u32,
+    #[serde(deserialize_with = "lenient")]
     pub max_speed: u32,
     /// Show the servers that look fake or are listed twice, which are hidden by default (except
     /// the user's own: see [`Seen::suspect`]).
+    #[serde(deserialize_with = "lenient")]
     pub show_suspect: bool,
 }
 
@@ -179,17 +201,6 @@ pub struct Seen {
     /// Looks fake or is a second listing (see `suspect`), and isn't a server the user keeps
     /// (a favorite, a recent one, or one added by address), which always show.
     pub suspect: bool,
-}
-
-/// A value of the wrong kind (such as a choice a newer version saved) reads as the default,
-/// rather than losing the whole state.
-fn lenient<'de, D, T>(d: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned + Default,
-{
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// Reads country codes, keeping the two-letter ones, upper case and once each.
@@ -262,31 +273,41 @@ impl Filters {
     }
 }
 
-/// Whether a search matches a server's country: its code exactly, or (from three letters on,
-/// so "us" doesn't match Belarus) part of its name.
+/// Whether a search (in lower case) matches a server's country: its code exactly, or (from three
+/// letters on) the start of its name or of a word in it. So "germ" and "kingdom" find Germany and
+/// the United Kingdom, but "man" doesn't match Germany or Oman, nor "us" Belarus.
 fn country_hit(s: &Server, needle: &str) -> bool {
     s.country.as_deref().is_some_and(|code| {
         code.eq_ignore_ascii_case(needle)
             || (needle.chars().count() >= 3
-                && crate::geo::name(code).is_some_and(|n| n.to_lowercase().contains(needle)))
+                && crate::geo::name(code).is_some_and(|n| name_starts(&n.to_lowercase(), needle)))
     })
 }
 
+/// Whether `needle` starts a country's name (in lower case) or one of its words, leaving out
+/// the small ones ("and", "of", "the") so "and" doesn't find Trinidad and Tobago.
+fn name_starts(name: &str, needle: &str) -> bool {
+    const SMALL: &[&str] = &["and", "of", "the"];
+    name.starts_with(needle)
+        || name
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !SMALL.contains(word))
+            .any(|word| word.starts_with(needle))
+}
+
 /// Reads a list of maps, or the single world name (empty for any) that older versions saved.
+/// Anything else reads as any map, and entries that aren't names are skipped.
 fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        One(String),
-        Many(Vec<String>),
-    }
-    let maps = match OneOrMany::deserialize(d)? {
-        OneOrMany::One(map) if map.is_empty() => Vec::new(),
-        OneOrMany::One(map) => vec![map],
-        OneOrMany::Many(maps) => maps,
+    let maps = match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(map) => vec![map],
+        serde_json::Value::Array(maps) => maps
+            .into_iter()
+            .filter_map(|m| m.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
     };
     let mut keys: Vec<String> = Vec::new();
-    for key in maps.iter().map(|m| map_key(m)) {
+    for key in maps.iter().filter(|m| !m.is_empty()).map(|m| map_key(m)) {
         if !keys.contains(&key) {
             keys.push(key);
         }
@@ -355,11 +376,13 @@ impl Filters {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The list's sort column; busiest first by default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortBy {
     Favorite,
     Name,
     Map,
+    #[default]
     Players,
     Queue,
     Time,
@@ -368,8 +391,9 @@ pub enum SortBy {
     Country,
 }
 
-/// Compares two servers by a column, smallest first. Unknown pings compare as greater, so the
-/// caller keeps them last when it reverses the order.
+/// Compares two servers by a column, smallest first. Unknown values (pings, countries, times)
+/// compare as greater, and [`one_unknown`] tells the caller to keep them last when it reverses
+/// the order.
 pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Ordering {
     let players = |s: &Server, seen: &Seen| seen.players.map_or(s.players, |(p, _)| p);
     let queue = |s: &Server, seen: &Seen| seen.queue.or(s.queue).unwrap_or(0);
@@ -379,11 +403,14 @@ pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Orderi
         SortBy::Map => map_title(&a.map).cmp(&map_title(&b.map)),
         SortBy::Players => players(a, x).cmp(&players(b, y)),
         SortBy::Queue => queue(a, x).cmp(&queue(b, y)),
-        SortBy::Time => x
-            .time
-            .as_ref()
-            .or(a.time.as_ref())
-            .cmp(&y.time.as_ref().or(b.time.as_ref())),
+        // Servers whose time isn't known after the rest.
+        SortBy::Time => {
+            let (ta, tb) = (
+                x.time.as_deref().or(a.time.as_deref()),
+                y.time.as_deref().or(b.time.as_deref()),
+            );
+            (ta.is_none(), ta).cmp(&(tb.is_none(), tb))
+        }
         SortBy::Ping => match (x.ping, y.ping) {
             (Some(x), Some(y)) => x.cmp(&y),
             (Some(_), None) => Ordering::Less,
@@ -396,6 +423,19 @@ pub fn compare(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> Orderi
         SortBy::Country => {
             (a.country.is_none(), &a.country).cmp(&(b.country.is_none(), &b.country))
         }
+    }
+}
+
+/// Whether one of two servers has the column's value and the other doesn't (no ping, no known
+/// country, no in-game time): then [`compare`]'s order stays when sorting the other way too, so
+/// servers that can't be placed are always last.
+pub fn one_unknown(by: SortBy, a: &Server, x: &Seen, b: &Server, y: &Seen) -> bool {
+    let time = |s: &Server, seen: &Seen| seen.time.is_some() || s.time.is_some();
+    match by {
+        SortBy::Ping => x.ping.is_some() != y.ping.is_some(),
+        SortBy::Country => a.country.is_some() != b.country.is_some(),
+        SortBy::Time => time(a, x) != time(b, y),
+        _ => false,
     }
 }
 
@@ -664,6 +704,34 @@ mod tests {
         );
         s.country = None;
         assert!(!search("germany").matches(&s, &Seen::default()));
+
+        // Only the start of the name or of a word in it, so searching for part of a server's
+        // name doesn't bring in whole countries.
+        s.name = "Some server".into();
+        for (code, text, hit) in [
+            ("DE", "man", false),
+            ("RO", "man", false),
+            ("OM", "man", false),
+            ("OM", "oman", true),
+            ("IM", "man", true),
+            ("RU", "rus", true),
+            ("BY", "rus", false),
+            ("CY", "rus", false),
+            ("FI", "and", false),
+            ("PL", "and", false),
+            ("TT", "and", false),
+            ("TT", "tobago", true),
+            ("IS", "ice", true),
+            ("GB", "kingdom", true),
+            ("GB", "united k", true),
+            ("US", "states", true),
+            ("US", "us", true),
+            ("BY", "us", false),
+            ("GW", "bissau", true),
+        ] {
+            s.country = Some(code.into());
+            assert_eq!(search(text).matches(&s, &Seen::default()), hit, "{text} in {code}");
+        }
     }
 
     #[test]
@@ -701,6 +769,33 @@ mod tests {
             Ordering::Less,
             "unknown after the rest"
         );
+        // Which keeps them last when sorting the other way too.
+        assert!(one_unknown(SortBy::Country, &a, &none, &b, &none));
+        b.country = Some("AT".into());
+        assert!(!one_unknown(SortBy::Country, &a, &none, &b, &none));
+    }
+
+    #[test]
+    fn unknown_times_and_pings_sort_last() {
+        let mut a = server();
+        let b = server();
+        a.time = Some("12:00".into());
+        let none = Seen::default();
+        assert_eq!(compare(SortBy::Time, &a, &none, &b, &none), Ordering::Less);
+        assert!(one_unknown(SortBy::Time, &a, &none, &b, &none));
+        // The answer's time counts too.
+        let answered = Seen {
+            time: Some("06:00".into()),
+            ping: Some(40),
+            ..Default::default()
+        };
+        assert_eq!(
+            compare(SortBy::Time, &a, &none, &b, &answered),
+            Ordering::Greater
+        );
+        assert!(!one_unknown(SortBy::Time, &a, &none, &b, &answered));
+        assert!(one_unknown(SortBy::Ping, &a, &none, &b, &answered));
+        assert!(!one_unknown(SortBy::Players, &a, &none, &b, &answered));
     }
 
     #[test]

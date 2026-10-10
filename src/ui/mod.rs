@@ -174,7 +174,6 @@ pub struct App {
     /// A server being looked up from Recent, and the last such lookup that failed.
     looking_up: Option<String>,
     lookup_failed: Option<(String, String)>,
-    /// When DayZ was last launched.
     /// When DayZ was last launched, and with which mods.
     last_launch: Option<(Instant, Vec<u64>)>,
     index: HashMap<String, usize>,
@@ -544,7 +543,12 @@ impl App {
                         seen.same_version,
                         seen.locked,
                         seen.time.as_deref().and_then(server::is_day),
+                        // The time itself only moves rows when sorting by it.
+                        seen.time.filter(|_| app.state.sort == SortBy::Time),
                         seen.battleye,
+                        seen.day_speed,
+                        // What the likely-fakes rules read besides the counts.
+                        app.screen_answer_state(s),
                     ))
                 };
                 let before = counts(self);
@@ -793,10 +797,13 @@ impl App {
     }
 
     /// Whether the list's order or filtering depends on what servers say when pinged (player
-    /// counts, queue, version, password).
+    /// counts, queue, in-game time, version, password, tags, and the likely-fakes rules).
     fn answer_matters(&self) -> bool {
         let f = &self.state.filters;
-        matches!(self.state.sort, SortBy::Players | SortBy::Queue)
+        matches!(
+            self.state.sort,
+            SortBy::Players | SortBy::Queue | SortBy::Time
+        )
             || f.hide_other_versions
             || f.hide_password
             || f.hide_empty
@@ -898,9 +905,9 @@ impl App {
             let (x, y) = (&seen[a], &seen[b]);
             let (a, b) = (&self.servers[a], &self.servers[b]);
             let order = server::compare(by, a, x, b, y);
-            // Servers without a ping stay last either way.
-            let unknown_ping = by == SortBy::Ping && x.ping.is_none() != y.ping.is_none();
-            let order = if self.state.sort_descending && !unknown_ping {
+            // Servers without a ping, country, or time stay last either way.
+            let unknown = server::one_unknown(by, a, x, b, y);
+            let order = if self.state.sort_descending && !unknown {
                 order.reverse()
             } else {
                 order
