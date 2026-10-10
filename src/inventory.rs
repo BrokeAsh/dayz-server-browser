@@ -1,7 +1,7 @@
-//! What's in DayZ's Workshop folder, for the Mods page: the mods Steam installed for this Steam
-//! account (with their names, sizes and update times), the folders it didn't (left behind, or
-//! another account's), which favorite or recent servers use each mod, and deleting a leftover
-//! folder safely.
+//! What's in DayZ's Workshop folder, for the Mods page: the mods Steam installed (with their
+//! names, sizes and update times), the folders it didn't (left behind, or another account's not
+//! installed yet), which of the user's servers use each mod, and deleting a leftover folder
+//! safely.
 
 use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
@@ -58,16 +58,65 @@ pub fn read_records(text: &str) -> Option<HashMap<u64, Record>> {
     Some(records)
 }
 
-/// The Steam account signed in most recently (its 32-bit id), from Steam's `loginusers.vdf`.
-pub fn current_account() -> Option<u32> {
-    steam::steam_roots().into_iter().find_map(|(root, _)| {
-        let text = std::fs::read_to_string(root.join("config").join("loginusers.vdf")).ok()?;
-        account_from_login_users(&text)
+/// The Steam account signed in most recently (its 32-bit id) to the Steam that owns DayZ's
+/// library, from its `loginusers.vdf`. If no Steam install lists that library (or none of those
+/// says who signed in), the one signed in last to any of them.
+pub fn current_account(install: &Install) -> Option<u32> {
+    let roots: Vec<PathBuf> = steam::steam_roots()
+        .into_iter()
+        .map(|(root, _)| root)
+        .collect();
+    let library = install
+        .game
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)?;
+    account_for(&roots, library)
+}
+
+/// [`current_account`] among these Steam installs, for the library (the folder holding
+/// `steamapps`) DayZ is in.
+fn account_for(roots: &[PathBuf], library: &Path) -> Option<u32> {
+    let latest = |roots: &mut dyn Iterator<Item = &PathBuf>| {
+        roots
+            .filter_map(|root| {
+                let path = root.join("config").join("loginusers.vdf");
+                account_from_login_users(&std::fs::read_to_string(path).ok()?)
+            })
+            .max_by_key(|&(_, time)| time)
+            .map(|(account, _)| account)
+    };
+    latest(&mut roots.iter().filter(|root| owns_library(root, library)))
+        .or_else(|| latest(&mut roots.iter()))
+}
+
+/// Whether a Steam install keeps its games in `library`: it's the install's own folder, or one its
+/// `libraryfolders.vdf` lists.
+fn owns_library(root: &Path, library: &Path) -> bool {
+    let same = |a: &Path| match (a.canonicalize(), library.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if same(root) {
+        return true;
+    }
+    let Ok(text) = std::fs::read_to_string(root.join("steamapps").join("libraryfolders.vdf"))
+    else {
+        return false;
+    };
+    let parsed = vdf::parse(&text);
+    parsed.get("libraryfolders").is_some_and(|folders| {
+        folders
+            .entries()
+            .iter()
+            .filter_map(|(_, folder)| folder.str("path"))
+            .any(|path| same(Path::new(path)))
     })
 }
 
-/// The account marked `MostRecent`, or else the one with the latest sign-in time.
-fn account_from_login_users(text: &str) -> Option<u32> {
+/// The account marked `MostRecent`, or else the one with the latest sign-in time; with its
+/// sign-in time.
+fn account_from_login_users(text: &str) -> Option<(u32, u64)> {
     let root = vdf::parse(text);
     let users = root.get("users")?;
     let mut best: Option<(bool, u64, u32)> = None;
@@ -91,7 +140,7 @@ fn account_from_login_users(text: &str) -> Option<u32> {
             best = Some(candidate);
         }
     }
-    best.map(|(_, _, account)| account)
+    best.map(|(_, time, account)| (account, time))
 }
 
 /// Why a folder counts as left over.
@@ -99,21 +148,34 @@ fn account_from_login_users(text: &str) -> Option<u32> {
 pub enum Leftover {
     /// Steam has no record of installing it.
     NoRecord,
-    /// Another Steam account on this computer subscribed to it.
+    /// Not installed, and another Steam account on this computer subscribed to it.
     OtherAccount(u32),
 }
 
 /// Whether a folder with this record is a leftover; `account` is the current one, if known.
+///
+/// A mod Steam lists as installed never is, whoever it's recorded under: Steam keeps a single
+/// subscriber per mod, so one that two accounts on this computer use shows only one of them
+/// (see [`other_account`]).
 pub fn classify(record: Option<&Record>, account: Option<u32>) -> Option<Leftover> {
     match record {
-        // Installed, or subscribed and not installed yet (Steam is still getting it): this
-        // account's unless Steam says another's.
-        Some(r) if r.installed || r.subscribed_by.is_some() => match (r.subscribed_by, account) {
+        Some(r) if r.installed => None,
+        // Subscribed and not installed yet (Steam is still getting it): this account's unless
+        // Steam says another's.
+        Some(r) if r.subscribed_by.is_some() => match (r.subscribed_by, account) {
             (Some(by), Some(me)) if by != me => Some(Leftover::OtherAccount(by)),
             _ => None,
         },
         _ => Some(Leftover::NoRecord),
     }
+}
+
+/// The other Steam account an installed mod is recorded under, if it's not the current one. The
+/// current account may well use it too.
+pub fn other_account(record: Option<&Record>, account: Option<u32>) -> Option<u32> {
+    let r = record.filter(|r| r.installed)?;
+    r.subscribed_by
+        .filter(|&by| account.is_some_and(|me| me != by))
 }
 
 /// One numeric folder in the Workshop folder.
@@ -129,8 +191,10 @@ pub struct Folder {
     pub time_updated: u64,
     /// It's a link (or on Windows, a junction), so it's never deleted through.
     pub link: bool,
-    /// `None` for a mod Steam installed for this account.
+    /// `None` for a mod Steam installed.
     pub leftover: Option<Leftover>,
+    /// An installed mod Steam recorded under another account on this computer ([`other_account`]).
+    pub other_account: Option<u32>,
 }
 
 /// Everything in the Workshop folder.
@@ -205,6 +269,7 @@ pub fn scan(install: &Install, account: Option<u32>) -> Inventory {
             time_updated: record.map_or(0, |r| r.time_updated),
             link,
             leftover,
+            other_account: other_account(record, account),
             path,
         };
         if folder.leftover.is_some() {
@@ -342,14 +407,20 @@ pub fn checked_folder(workshop: &Path, path: &Path) -> Result<PathBuf> {
     Ok(real)
 }
 
-/// Deletes a leftover folder after checking again, from Steam's current records, that it's still
-/// one (Steam may have installed it meanwhile). Returns the bytes freed.
-pub fn delete_leftover(install: &Install, id: u64, account: Option<u32>) -> Result<u64> {
+/// Deletes a leftover folder after checking again, from Steam's current records and the account
+/// signed in now, that it's still one (Steam may have installed it meanwhile, or another account
+/// signed in). Returns the bytes freed. This reads Steam's files, so it belongs on a background
+/// thread.
+pub fn delete_leftover(install: &Install, id: u64) -> Result<u64> {
+    delete_leftover_for(install, id, current_account(install))
+}
+
+fn delete_leftover_for(install: &Install, id: u64, account: Option<u32>) -> Result<u64> {
     let text = std::fs::read_to_string(&install.manifest)
         .context("couldn't read Steam's record of installed mods")?;
     let records = read_records(&text).context("couldn't read Steam's record of installed mods")?;
     if classify(records.get(&id), account).is_none() {
-        bail!("Steam has this mod installed for your account now; unsubscribe from it instead");
+        bail!("Steam has this mod installed (or is getting it) now, so it isn't left over");
     }
     let path = checked_folder(&install.workshop, &install.workshop.join(id.to_string()))?;
     let size = folder_size(&path);
@@ -396,6 +467,10 @@ mod tests {
 		"444"
 		{
 			"subscribedby"		"88216642"
+		}
+		"777"
+		{
+			"subscribedby"		"5"
 		}
 	}
 }"#;
@@ -447,13 +522,59 @@ mod tests {
             "76561198048482370" { "AccountName" "a" "Timestamp" "1791394310" }
             "76561198154829661" { "AccountName" "b" "Timestamp" "1791045127" }
         }"#;
-        assert_eq!(account_from_login_users(users), Some(88216642));
+        assert_eq!(
+            account_from_login_users(users),
+            Some((88216642, 1791394310))
+        );
         let marked = r#""users" {
             "76561198048482370" { "MostRecent" "0" "Timestamp" "9" }
             "76561198154829661" { "MostRecent" "1" "Timestamp" "1" }
         }"#;
-        assert_eq!(account_from_login_users(marked), Some(194563933));
+        assert_eq!(account_from_login_users(marked), Some((194563933, 1)));
         assert_eq!(account_from_login_users(r#""users" { "12" { } }"#), None);
+    }
+
+    #[test]
+    fn asks_the_steam_that_owns_the_library() {
+        let root = std::env::temp_dir().join(format!("dzb-inv-roots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let users = |steam: &Path, id: u64, time: u64| {
+            std::fs::create_dir_all(steam.join("config")).unwrap();
+            let text =
+                format!(r#""users" {{ "{id}" {{ "MostRecent" "1" "Timestamp" "{time}" }} }}"#);
+            std::fs::write(steam.join("config/loginusers.vdf"), text).unwrap();
+        };
+        // A stale native Steam, signed in more recently, beside the Flatpak that has DayZ in a
+        // library of its own.
+        let (native, flatpak, library) =
+            (root.join("native"), root.join("flatpak"), root.join("lib"));
+        users(&native, STEAM_ID_BASE + 1, 2000);
+        users(&flatpak, STEAM_ID_BASE + 2, 1000);
+        std::fs::create_dir_all(flatpak.join("steamapps")).unwrap();
+        std::fs::create_dir_all(&library).unwrap();
+        let roots = [native.clone(), flatpak.clone(), root.join("missing")];
+        assert_eq!(
+            account_for(&roots, &library),
+            Some(1),
+            "no owner: the latest"
+        );
+        std::fs::write(
+            flatpak.join("steamapps/libraryfolders.vdf"),
+            format!(
+                r#""libraryfolders" {{ "0" {{ "path" "{}" }} "1" {{ "path" "{}" }} }}"#,
+                flatpak.display(),
+                library.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            account_for(&roots, &library),
+            Some(2),
+            "the library's owner"
+        );
+        // A library that's a Steam install's own folder.
+        assert_eq!(account_for(&roots, &native), Some(1));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -475,20 +596,24 @@ mod tests {
         let (install, root) = temp_install("leftovers");
         std::fs::write(&install.manifest, ACF).unwrap();
         make_mod(&install, "111", 10);
-        make_mod(&install, "222", 10); // another account's
+        make_mod(&install, "222", 10); // installed, recorded under another account
         make_mod(&install, "333", 2000); // no record
         make_mod(&install, "444", 10); // subscribed, not installed yet
+        make_mod(&install, "777", 10); // another account's, not installed
         make_mod(&install, "not-a-mod", 10);
         std::fs::write(install.workshop.join("555"), "a file, not a folder").unwrap();
 
         let inventory = scan(&install, Some(88216642));
         let mut installed: Vec<u64> = inventory.installed.iter().map(|f| f.id).collect();
         installed.sort();
-        assert_eq!(installed, [111, 444]);
+        assert_eq!(installed, [111, 222, 444]);
         let a = inventory.get(111).unwrap();
         assert_eq!(a.size, 527656, "Steam's size for an installed mod");
         assert_eq!(a.name.as_deref(), Some("Mod 111"));
         assert_eq!(a.time_updated, 1771519119);
+        assert_eq!(a.other_account, None);
+        // Steam keeps one subscriber per mod, so this may be ours too: it's installed, marked.
+        assert_eq!(inventory.get(222).unwrap().other_account, Some(5));
         let mut leftovers: Vec<(u64, Leftover)> = inventory
             .leftovers
             .iter()
@@ -497,19 +622,20 @@ mod tests {
         leftovers.sort_by_key(|l| l.0);
         assert_eq!(
             leftovers,
-            [(222, Leftover::OtherAccount(5)), (333, Leftover::NoRecord)]
+            [(333, Leftover::NoRecord), (777, Leftover::OtherAccount(5))]
         );
         let c = inventory.get(333).unwrap();
         assert!(c.size >= 2000, "a leftover's size is counted");
 
-        // Without knowing the account, another account's mods aren't leftovers.
+        // Without knowing the account, another account's mods aren't leftovers or marked.
         let unknown = scan(&install, None);
         assert!(unknown.leftovers.iter().all(|f| f.id == 333));
+        assert!(unknown.installed.iter().all(|f| f.other_account.is_none()));
         // Without Steam's records, nothing is.
         std::fs::remove_file(&install.manifest).unwrap();
         let blind = scan(&install, Some(88216642));
         assert!(blind.no_records && blind.leftovers.is_empty());
-        assert_eq!(blind.installed.len(), 4);
+        assert_eq!(blind.installed.len(), 5);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -572,18 +698,24 @@ mod tests {
         // links inside it are removed without touching what they point at.
         std::fs::write(&install.manifest, ACF).unwrap();
         let installed = make_mod(&install, "111", 10);
-        assert!(delete_leftover(&install, 111, Some(88216642)).is_err());
+        assert!(delete_leftover_for(&install, 111, Some(88216642)).is_err());
         assert!(installed.is_dir());
+        // Installed, though recorded under another account, or with the account unknown.
+        let theirs = make_mod(&install, "222", 10);
+        assert!(delete_leftover_for(&install, 222, Some(88216642)).is_err());
+        let pending = make_mod(&install, "777", 10);
+        assert!(delete_leftover_for(&install, 777, None).is_err());
+        assert!(theirs.is_dir() && pending.is_dir());
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, good.join("inner-link")).unwrap();
-        let freed = delete_leftover(&install, 333, Some(88216642)).unwrap();
+        let freed = delete_leftover_for(&install, 333, Some(88216642)).unwrap();
         assert!(freed >= 10);
         assert!(!good.exists());
         assert!(outside.is_dir());
         #[cfg(unix)]
         {
             // A leftover that's a link is refused.
-            assert!(delete_leftover(&install, 666, Some(88216642)).is_err());
+            assert!(delete_leftover_for(&install, 666, Some(88216642)).is_err());
             assert!(outside.is_dir());
         }
         std::fs::remove_dir_all(root).unwrap();

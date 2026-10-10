@@ -157,14 +157,16 @@ leave a tenth of their size spare (at least 1 GB), it says how much is needed an
 free, and won't download them or wait to join until there's room. When sizes aren't known, it
 says so and doesn't stop you.
 
-**Mods** in the top bar lists the Workshop mods Steam installed for your account, with their
-size, when each was last updated (and whether there's an update), and which of your favorite and
-recent servers use them. Search and sort them, open a mod's Workshop page or folder, or
-unsubscribe from mods, one at a time or all those no favorite or recent server uses. The helper
-does the unsubscribing; Steam deletes the files once it no longer counts DayZ as running, a
-moment after the helper quits. Folders Steam didn't install for your account (left behind, or
-another Steam account's) are listed apart, and can be deleted. Nothing is unsubscribed or deleted
-while DayZ runs.
+**Mods** in the top bar lists the Workshop mods Steam installed, with their size, when each was
+last updated (and whether there's an update), and which of your servers (favorites, recent,
+watched, and added by address) use them. Search and sort them; a mod's **…** button or a
+right-click on its row opens its Workshop page or folder, or unsubscribes from it. Select several
+to unsubscribe from them at once, or all those none of your servers uses. The helper does the
+unsubscribing; Steam deletes the files once it no longer counts DayZ as running, a moment after
+the helper quits. Folders Steam didn't install (left behind, or another Steam account's that it
+hasn't finished getting) are listed apart, and can be deleted. Steam records one account per mod,
+so a mod two accounts on this computer use may show as another account's; it stays an installed
+mod and is never offered for deleting. Nothing is unsubscribed or deleted while DayZ runs.
 
 ### Launching
 
