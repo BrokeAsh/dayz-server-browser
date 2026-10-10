@@ -16,6 +16,8 @@ open, the overlay runs in the background, ready for the game.
   queued server, it can wait and join as soon as there's a free slot and no queue, such as right
   after a restart.
 - Connects by address to servers the list doesn't have.
+- Notifies you when servers you pick have room: right-click any number of servers and choose
+  **Notify me when there's room**.
 - Optional: use Steam's own server list with your Steam Web API key instead of DZSA's.
 
 Status: early. Tested on Linux with a real DayZ install, including mod downloads and joining;
@@ -94,6 +96,25 @@ notices when Steam has downloaded them.
 
 Extra launch arguments (Settings) are added to every launch.
 
+### Notifications
+
+Right-click a server and pick **Notify me when there's room** (or click **Notify** in its details)
+to put it on your watch list; the status bar's bell opens the list, with how each server stands.
+While the browser is open it asks each one about every 30 seconds, and sends a desktop
+notification when one goes from full, queued, or not answering to a free slot with no queue.
+A server that keeps getting and losing a slot isn't announced again until it has been without room
+for two minutes. This is separate from the join window's **Join when there's room**, which joins by
+itself.
+
+- **Linux:** through your desktop's notification service. Clicking the notification or its
+  **Join** button brings the browser forward with the join window open.
+- **Windows:** a toast, for information only. Windows names the sender of a toast after the
+  program's Start menu entry, which the unpacked browser doesn't have, so it shows as Windows
+  PowerShell, and clicking it doesn't bring up the browser.
+
+If no notification can be shown, the browser says it in its own window instead. Settings has
+**Play a sound** and **Send a test notification**.
+
 ### The map overlay
 
 The overlay ships with the browser: its repository is included here as a git submodule
@@ -132,7 +153,7 @@ release downloads include it. Valve's library isn't part of this repository.
 ## Settings and files
 
 - Settings: `~/.config/dayz-browser/config.toml` (Windows: `%APPDATA%\dayz-browser\config`).
-- Favorites, recent servers, filters, and the cached list: `~/.local/share/dayz-browser/`
+- Favorites, recent servers, the watch list, filters, and the cached list: `~/.local/share/dayz-browser/`
   (Windows: `%APPDATA%\dayz-browser\data`).
 
 ## Credits

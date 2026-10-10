@@ -129,6 +129,10 @@ impl App {
                         }
                     });
                     row.col(|ui| {
+                        if state.is_watched(&addr) {
+                            ui.label(RichText::new("🔔").small().weak())
+                                .on_hover_text("You'll be notified when it has room");
+                        }
                         ui.label(&s.name);
                     });
                     row.col(|ui| {
@@ -261,6 +265,15 @@ impl App {
                 ui.ctx().copy_text(format!("{}:{}", s.ip, s.game_port));
                 self.toast("Address copied");
             }
+            ui.close();
+        }
+        let watch = if self.state.is_watched(addr) {
+            "Stop notifying"
+        } else {
+            "Notify me when there's room"
+        };
+        if ui.button(watch).clicked() {
+            self.toggle_watch(addr);
             ui.close();
         }
     }

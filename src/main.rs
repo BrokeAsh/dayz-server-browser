@@ -9,6 +9,7 @@ mod dzsa;
 mod http;
 mod launch;
 mod mods;
+mod notify;
 mod overlay;
 mod secret;
 mod server;
@@ -19,6 +20,7 @@ mod ui;
 mod update;
 mod vdf;
 mod version;
+mod watch;
 #[cfg(windows)]
 mod win;
 mod workshop;

@@ -86,6 +86,8 @@ impl App {
                     ui.separator();
                     self.added_section(ui);
                 }
+                ui.separator();
+                self.notifications_section(ui);
             });
         if !open {
             self.settings.extra_args = window.extra_args.clone();

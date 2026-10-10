@@ -97,6 +97,7 @@ impl App {
                     Ok(_) => ui.label(RichText::new("DayZ found").weak()),
                     Err(e) => ui.label(RichText::new(e).color(ERROR)),
                 };
+                self.watch_button(ui);
             });
         });
     }

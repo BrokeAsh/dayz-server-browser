@@ -76,6 +76,7 @@ impl App {
             if ui.selectable_label(favorite, label).clicked() {
                 self.toggle_favorite(&addr);
             }
+            self.watch_toggle(ui, &addr);
         });
         if self.state.added.contains(&addr) && self.only_added(&addr) {
             ui.horizontal(|ui| {

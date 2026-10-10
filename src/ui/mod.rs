@@ -16,6 +16,7 @@ mod join;
 mod list;
 mod settings;
 mod updates;
+mod watch;
 
 use eframe::egui::{self, Align, Color32};
 use std::collections::{HashMap, HashSet};
@@ -75,6 +76,8 @@ pub enum Msg {
         result: Result<Found, String>,
         then: Then,
     },
+    /// From the notification watch list's checker.
+    Watch(crate::watch::Out),
 }
 
 /// What a server looked up by address is for.
@@ -183,6 +186,8 @@ pub struct App {
     toast: Option<(String, Instant)>,
     update: updates::UpdateStatus,
     last_update_check: Option<Instant>,
+    /// The servers to notify about when they have room: their checker, statuses, and window.
+    watch_list: watch::WatchList,
 }
 
 impl App {
@@ -202,6 +207,7 @@ impl App {
         let settings = Settings::load();
         let install = steam::find(settings.game_dir.as_deref()).map_err(|e| format!("{e:#}"));
         let local = install.as_ref().map(LocalMods::load).unwrap_or_default();
+        let watch_list = watch::WatchList::start(&ctx, &tx, settings.notify_sound);
         let mut app = Self {
             ctx,
             tx,
@@ -252,6 +258,7 @@ impl App {
             update: updates::UpdateStatus::Idle,
             last_update_check: None,
             settings,
+            watch_list,
         };
         app.load_list(false);
         app.check_overlay(true);
@@ -265,6 +272,7 @@ impl App {
         for addr in app.state.added.clone() {
             app.look_up(addr, Then::Keep);
         }
+        app.resume_watching();
         app
     }
 
@@ -568,6 +576,7 @@ impl App {
             }
             Msg::Found { addr, result, then } => self.found(&addr, result, then),
             Msg::Update(msg) => self.update_msg(msg),
+            Msg::Watch(out) => self.watch_msg(out),
         }
     }
 
@@ -972,6 +981,7 @@ impl eframe::App for App {
         self.join_window(&ctx);
         self.connect_window(&ctx);
         self.settings_window(&ctx);
+        self.watch_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(4) {
