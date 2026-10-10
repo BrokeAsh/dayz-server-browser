@@ -17,6 +17,8 @@ open, the overlay runs in the background, ready for the game.
   after a restart.
 - Connects by address to servers the list doesn't have.
 - Optional: use Steam's own server list with your Steam Web API key instead of DZSA's.
+- Shows the DayZ developers' latest news from Steam, with a count of new posts on the News
+  button.
 
 Status: early. Tested on Linux with a real DayZ install, including mod downloads and joining;
 Windows is only tested in a VM so far.
@@ -94,6 +96,24 @@ notices when Steam has downloaded them.
 
 Extra launch arguments (Settings) are added to every launch.
 
+### News
+
+**News** in the top bar lists the developers' latest announcements on Steam (Steam's public news
+API; no key needed), and shows how many are new since you last looked (only posts from the last
+30 days count). Clicking a title opens the post in your web browser. The news is fetched when the
+browser starts and every 6 hours; if Steam can't be reached, the News window says so and nothing
+else is affected.
+
+### Discord
+
+The browser can show the server you're playing on in your Discord status (its name, map, and
+first or third person, with the time played), from the moment it launches DayZ until the game
+closes. It talks to the Discord app running on the same computer, and does nothing if Discord
+isn't running; it picks up if Discord starts later or restarts. Settings has a switch for it. The
+feature needs the browser's own Discord application id (`DISCORD_APP_ID` in `src/discord.rs`,
+from the [Discord developer portal](https://discord.com/developers/applications)); builds without
+one leave it out entirely.
+
 ### The map overlay
 
 The overlay ships with the browser: its repository is included here as a git submodule
@@ -142,6 +162,7 @@ release downloads include it. Valve's library isn't part of this repository.
   description.
 - Server list: [DZSA Launcher](https://dayzsalauncher.com)'s public API.
 - Steamworks access: [steamworks-rs](https://github.com/Noxime/steamworks-rs).
+- Discord status: [discord-rich-presence](https://github.com/vionya/discord-rich-presence) (MIT).
 
 ## License
 

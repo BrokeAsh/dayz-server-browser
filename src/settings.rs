@@ -40,6 +40,8 @@ pub struct Settings {
     pub game_dir: Option<PathBuf>,
     /// Look for a new version of the browser at start.
     pub check_updates: bool,
+    /// Show the server being played in Discord (when the browser has a Discord application).
+    pub discord_presence: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +52,7 @@ impl Default for Settings {
             overlay: true,
             game_dir: None,
             check_updates: true,
+            discord_presence: true,
         }
     }
 }
@@ -100,6 +103,9 @@ pub struct State {
     pub columns: [f32; 6],
     /// Servers added by address (`ip:query_port`), which the list may not include.
     pub added: Vec<String>,
+    /// The date (Unix time) of the newest DayZ news post the user has seen.
+    #[serde(deserialize_with = "lenient_u64")]
+    pub news_seen: u64,
 }
 
 pub const COLUMNS: [f32; 6] = [100.0, 64.0, 48.0, 48.0, 44.0, 44.0];
@@ -116,6 +122,12 @@ fn columns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 6], D::Error>
     })
 }
 
+/// Reads a number, giving 0 for anything else rather than failing the whole state.
+fn lenient_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_u64().unwrap_or(0))
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -126,6 +138,7 @@ impl Default for State {
             recent: Vec::new(),
             columns: COLUMNS,
             added: Vec::new(),
+            news_seen: 0,
         }
     }
 }
@@ -219,5 +232,31 @@ mod tests {
             serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"],"columns":"wide"}"#).unwrap();
         assert_eq!(state.columns, COLUMNS);
         assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+    }
+
+    #[test]
+    fn reads_state_from_before_the_news() {
+        let state: State = serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"]}"#).unwrap();
+        assert_eq!(state.news_seen, 0);
+        assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+        let state: State =
+            serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"],"news_seen":"soon"}"#).unwrap();
+        assert_eq!(state.news_seen, 0);
+        assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+        let state = State {
+            news_seen: 1791555988,
+            ..State::default()
+        };
+        let again: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(again.news_seen, 1791555988);
+    }
+
+    #[test]
+    fn reads_settings_from_before_discord() {
+        let settings: Settings = toml::from_str("overlay = false\n").unwrap();
+        assert!(settings.discord_presence, "on unless turned off");
+        assert!(!settings.overlay);
+        let settings: Settings = toml::from_str("discord_presence = false\n").unwrap();
+        assert!(!settings.discord_presence);
     }
 }

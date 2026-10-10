@@ -82,6 +82,7 @@ impl App {
                 self.overlay_section(ui, &mut window);
                 ui.separator();
                 self.updates_section(ui, &window);
+                self.discord_section(ui);
                 if !self.state.added.is_empty() {
                     ui.separator();
                     self.added_section(ui);

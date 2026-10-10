@@ -1,5 +1,5 @@
-//! The bars around the list: the top bar (Refresh, Connect by address, the search, Settings, and
-//! the Update button) and the status bar (list counts and age, pinging, the map overlay, DayZ).
+//! The bars around the list: the top bar (Refresh, Connect by address, the search, Settings, News,
+//! and the Update button) and the status bar (list counts and age, pinging, the map overlay, DayZ).
 
 use eframe::egui::{self, Align, Layout, RichText};
 use std::time::SystemTime;
@@ -45,6 +45,7 @@ impl App {
                 if ui.button("⚙ Settings").clicked() && self.settings_window.is_none() {
                     self.settings_window = Some(settings::SettingsWindow::new(&self.settings));
                 }
+                self.news_button(ui);
                 self.update_button(ui);
                 let source = match self.list.source {
                     Source::Dzsa => "DZSA list",

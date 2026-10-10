@@ -6,14 +6,16 @@
 //! list, pinging, asking servers for their mods, and building the filtered, sorted view. Each
 //! part of the window is drawn in its own file: the server table in `list`, the filters panel in
 //! `filters`, the details panel in `details`, the top and status bars in `bars`, and the windows
-//! in `join`, `connect`, `settings` and `updates`.
+//! in `join`, `connect`, `settings`, `updates` and `news`; `discord` keeps Discord's status.
 
 mod bars;
 mod connect;
 mod details;
+mod discord;
 mod filters;
 mod join;
 mod list;
+mod news;
 mod settings;
 mod updates;
 
@@ -75,6 +77,8 @@ pub enum Msg {
         result: Result<Found, String>,
         then: Then,
     },
+    /// The DayZ news from Steam.
+    News(Result<Vec<crate::news::Item>, String>),
 }
 
 /// What a server looked up by address is for.
@@ -183,6 +187,8 @@ pub struct App {
     toast: Option<(String, Instant)>,
     update: updates::UpdateStatus,
     last_update_check: Option<Instant>,
+    news: news::News,
+    discord: discord::DiscordStatus,
 }
 
 impl App {
@@ -252,6 +258,8 @@ impl App {
             update: updates::UpdateStatus::Idle,
             last_update_check: None,
             settings,
+            news: news::News::default(),
+            discord: discord::DiscordStatus::default(),
         };
         app.load_list(false);
         app.check_overlay(true);
@@ -568,6 +576,7 @@ impl App {
             }
             Msg::Found { addr, result, then } => self.found(&addr, result, then),
             Msg::Update(msg) => self.update_msg(msg),
+            Msg::News(result) => self.news_msg(result),
         }
     }
 
@@ -914,6 +923,8 @@ impl eframe::App for App {
             }
         }
         self.check_for_update_now_and_then();
+        self.news_now_and_then();
+        self.discord_now_and_then();
     }
 
     fn on_exit(&mut self) {
@@ -923,6 +934,7 @@ impl eframe::App for App {
         {
             log::warn!("couldn't save the browser state: {e:#}");
         }
+        self.discord_exit();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -972,6 +984,7 @@ impl eframe::App for App {
         self.join_window(&ctx);
         self.connect_window(&ctx);
         self.settings_window(&ctx);
+        self.news_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(4) {

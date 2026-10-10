@@ -722,6 +722,7 @@ impl App {
             joined,
         });
         self.state_changed();
+        self.discord_playing(&view.server);
         Ok(())
     }
 }

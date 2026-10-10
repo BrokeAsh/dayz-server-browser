@@ -5,10 +5,12 @@
 
 mod a2s;
 mod address;
+mod discord;
 mod dzsa;
 mod http;
 mod launch;
 mod mods;
+mod news;
 mod overlay;
 mod secret;
 mod server;
@@ -29,7 +31,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
-        "info,wgpu=warn,wgpu_hal=warn,egui_wgpu=warn,zbus=warn,tracing=warn,naga=warn",
+        "info,wgpu=warn,wgpu_hal=warn,egui_wgpu=warn,zbus=warn,tracing=warn,naga=warn,discord_rich_presence=error",
     ))
     .init();
     let options = eframe::NativeOptions {
