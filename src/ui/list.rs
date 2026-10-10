@@ -1,5 +1,5 @@
 //! The server table: its columns and sortable header, the rows, the draggable column dividers,
-//! pinging the servers on screen, and scrolling to the selected one.
+//! the right-click menu on a row, pinging the servers on screen, and scrolling to the selected one.
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -34,6 +34,8 @@ impl App {
         let mut sort_clicked: Option<SortBy> = None;
         let mut favorite_clicked: Option<String> = None;
         let mut visible: Vec<String> = Vec::new();
+        // Each row on screen, for its right-click menu.
+        let mut menus: Vec<(String, egui::Response)> = Vec::new();
         let scroll_row = self.scroll_to_selected.take().and_then(|align| {
             let selected = self.selected.as_ref()?;
             let row = self
@@ -182,6 +184,7 @@ impl App {
                         }
                     });
                     let response = row.response();
+                    menus.push((addr.clone(), response.clone()));
                     if response.double_clicked() {
                         clicked = Some((addr, true));
                     } else if response.clicked() {
@@ -226,6 +229,39 @@ impl App {
             if join {
                 self.open_join(&addr);
             }
+        }
+        // The right-click menus, once the table no longer borrows the app. Each belongs to its
+        // server rather than its row, so a re-sort while one is open can't aim it at another.
+        for (addr, response) in menus {
+            egui::Popup::context_menu(&response)
+                .id(egui::Id::new(("row menu", &addr)))
+                .show(|ui| self.row_menu(ui, &addr));
+        }
+    }
+
+    /// The right-click menu on a server's row. Each item does its thing and closes the menu.
+    fn row_menu(&mut self, ui: &mut egui::Ui, addr: &str) {
+        if ui.button("Join…").clicked() {
+            self.open_join(addr);
+            ui.close();
+        }
+        let favorite = if self.state.is_favorite(addr) {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        };
+        if ui.button(favorite).clicked() {
+            self.toggle_favorite(addr);
+            ui.close();
+        }
+        if ui.button("Copy address").clicked() {
+            // The address players type: the game port, not the query port.
+            if let Some(&i) = self.index.get(addr) {
+                let s = &self.servers[i];
+                ui.ctx().copy_text(format!("{}:{}", s.ip, s.game_port));
+                self.toast("Address copied");
+            }
+            ui.close();
         }
     }
 
