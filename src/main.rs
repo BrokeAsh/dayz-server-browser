@@ -6,6 +6,7 @@
 mod a2s;
 mod address;
 mod discord;
+mod disk;
 mod dzsa;
 mod history;
 mod http;

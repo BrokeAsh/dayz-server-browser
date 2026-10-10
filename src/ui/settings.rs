@@ -27,6 +27,13 @@ pub struct SettingsWindow {
     pub(super) overlay_version: Option<String>,
     capturing: bool,
     hotkey_message: Option<(String, bool)>,
+    /// The in-game name, applied like the extra arguments.
+    name: String,
+    /// The CPU cores to give DayZ while the setting is on, applied once the value stops changing
+    /// (not on every step of a drag).
+    cpu_count: u32,
+    /// The machine's logical cores, the most there is to give.
+    cores: u32,
 }
 
 fn shown(path: Option<&PathBuf>) -> String {
@@ -46,6 +53,20 @@ impl SettingsWindow {
             overlay_version: overlay::program().and_then(|p| overlay::version(&p)),
             capturing: false,
             hotkey_message: None,
+            name: settings.name.clone(),
+            cpu_count: settings.cpu_count.unwrap_or(0),
+            cores: std::thread::available_parallelism()
+                .map(|n| n.get() as u32)
+                .unwrap_or(1),
+        }
+    }
+
+    /// Edits not applied yet go into the settings (when the window closes).
+    fn apply_pending(&self, settings: &mut Settings) {
+        settings.extra_args = self.extra_args.clone();
+        settings.name = self.name.clone();
+        if settings.cpu_count.is_some() {
+            settings.cpu_count = Some(self.cpu_count.max(1));
         }
     }
 
@@ -69,27 +90,21 @@ impl App {
         };
         let before = self.settings.clone();
         let mut open = true;
+        // With the Steam key and servers added by address, it can be taller than a small window.
+        let tallest = (ctx.content_rect().height() - 120.0).max(200.0);
         egui::Window::new("Settings")
             .collapsible(false)
             .resizable(false)
             .default_width(480.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                self.list_section(ui, &mut window);
-                ui.separator();
-                self.launch_section(ui, &mut window);
-                ui.separator();
-                self.overlay_section(ui, &mut window);
-                ui.separator();
-                self.updates_section(ui, &window);
-                self.discord_section(ui);
-                if !self.state.added.is_empty() {
-                    ui.separator();
-                    self.added_section(ui);
-                }
+                egui::ScrollArea::vertical()
+                    .max_height(tallest)
+                    .min_scrolled_height(tallest)
+                    .show(ui, |ui| self.settings_sections(ui, &mut window));
             });
         if !open {
-            self.settings.extra_args = window.extra_args.clone();
+            window.apply_pending(&mut self.settings);
         }
         if self.settings != before
             && let Err(e) = self.settings.save()
@@ -98,6 +113,21 @@ impl App {
         }
         if open {
             self.settings_window = Some(window);
+        }
+    }
+
+    fn settings_sections(&mut self, ui: &mut egui::Ui, window: &mut SettingsWindow) {
+        self.list_section(ui, window);
+        ui.separator();
+        self.launch_section(ui, window);
+        ui.separator();
+        self.overlay_section(ui, window);
+        ui.separator();
+        self.updates_section(ui, window);
+        self.discord_section(ui);
+        if !self.state.added.is_empty() {
+            ui.separator();
+            self.added_section(ui);
         }
     }
 
@@ -206,10 +236,12 @@ impl App {
 
     fn launch_section(&mut self, ui: &mut egui::Ui, window: &mut SettingsWindow) {
         ui.heading("Launching");
+        self.launch_options(ui, window);
+        ui.add_space(4.0);
         ui.label("Extra launch arguments");
         let edit = ui.add(
             egui::TextEdit::singleline(&mut window.extra_args)
-                .hint_text("-nosplash -skipIntro -world=empty")
+                .hint_text("added to every launch, as on a command line")
                 .desired_width(f32::INFINITY),
         );
         if edit.lost_focus() {
@@ -221,8 +253,8 @@ impl App {
                 if !conflicts.is_empty() {
                     ui.label(
                         RichText::new(format!(
-                            "The browser sets these itself; remove them: {}",
-                            conflicts.join(" ")
+                            "The browser or the options above set these; remove them: {}",
+                            launch::shown_args(&conflicts)
                         ))
                         .color(ERROR),
                     );
@@ -231,6 +263,16 @@ impl App {
             Err(e) => {
                 ui.label(RichText::new(format!("{e:#}")).color(ERROR));
             }
+        }
+        // What a launch adds, with the edits not applied yet.
+        let mut pending = self.settings.clone();
+        window.apply_pending(&mut pending);
+        if let Ok(added) = launch::added_args(&pending)
+            && !added.is_empty()
+        {
+            // Cut to one line; egui shows the rest on hover.
+            let shown = format!("Adds: {}", launch::shown_args(&added));
+            ui.add(egui::Label::new(RichText::new(shown).weak().small()).truncate());
         }
 
         ui.add_space(6.0);
@@ -279,6 +321,67 @@ impl App {
                 Err(e) => window.game_message = Some(format!("{e:#}")),
             }
         }
+    }
+
+    /// The in-game name and the launch toggles.
+    fn launch_options(&mut self, ui: &mut egui::Ui, window: &mut SettingsWindow) {
+        ui.horizontal(|ui| {
+            ui.label("Name in game");
+            let edit = ui
+                .add(
+                    egui::TextEdit::singleline(&mut window.name)
+                        .hint_text("DayZ's own")
+                        .desired_width(220.0),
+                )
+                .on_hover_text(
+                    "Passed as -name. Quotes, backslashes, and $ ; & | < > ` are left out, since \
+                     they could break the command line.",
+                );
+            // Characters that can't be passed don't go in at all.
+            window.name.retain(launch::name_char_allowed);
+            if edit.lost_focus() {
+                self.settings.name = window.name.clone();
+            }
+        });
+        let s = &mut self.settings;
+        egui::Grid::new("launch-options")
+            .num_columns(2)
+            .spacing([16.0, 2.0])
+            .show(ui, |ui| {
+                ui.checkbox(&mut s.skip_intro, "Skip the intro and splash screens")
+                    .on_hover_text("-nosplash -skipIntro");
+                ui.checkbox(&mut s.windowed, "Windowed")
+                    .on_hover_text("-window");
+                ui.end_row();
+                ui.checkbox(&mut s.no_pause, "Keep running in the background")
+                    .on_hover_text("-noPause: the game doesn't pause when you switch away");
+                ui.checkbox(&mut s.empty_world, "Empty main menu (loads faster)")
+                    .on_hover_text("-world=empty: no game world behind the main menu");
+                ui.end_row();
+                ui.horizontal(|ui| {
+                    let mut limit = s.cpu_count.is_some();
+                    if ui
+                        .checkbox(&mut limit, "CPU cores")
+                        .on_hover_text("-cpuCount: how many cores DayZ uses; off lets it decide")
+                        .changed()
+                    {
+                        if limit && window.cpu_count == 0 {
+                            window.cpu_count = window.cores;
+                        }
+                        s.cpu_count = limit.then_some(window.cpu_count.max(1));
+                    }
+                    if limit {
+                        // A count set on another machine stays possible.
+                        let most = window.cores.max(window.cpu_count);
+                        let value =
+                            ui.add(egui::DragValue::new(&mut window.cpu_count).range(1..=most));
+                        if !value.dragged() && !value.has_focus() {
+                            s.cpu_count = Some(window.cpu_count.max(1));
+                        }
+                    }
+                });
+                ui.end_row();
+            });
     }
 
     fn overlay_section(&mut self, ui: &mut egui::Ui, window: &mut SettingsWindow) {

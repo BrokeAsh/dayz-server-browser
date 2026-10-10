@@ -18,6 +18,7 @@ mod join;
 mod list;
 mod news;
 mod notes;
+mod prejoin;
 mod settings;
 mod updates;
 

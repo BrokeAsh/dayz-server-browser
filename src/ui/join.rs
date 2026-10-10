@@ -8,8 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::prejoin::{self, Downloads, Space, SpaceProbe};
 use super::{App, ERROR, Fetch, GOOD, Msg, OverlayStatus, WARN, open_workshop, state_badge};
 use crate::a2s::{self, Pong};
+use crate::disk;
 use crate::launch;
 use crate::mods::ModState;
 use crate::server::{ModRef, Server, map_title};
@@ -67,6 +69,8 @@ pub struct Join {
     switch_to: Option<(String, String)>,
     /// Bring the window to the front next frame.
     focus: bool,
+    /// The free space on the Workshop library's drive.
+    space: SpaceProbe,
 }
 
 /// Slot watches running, for the updater (which runs on its own thread).
@@ -170,6 +174,7 @@ impl Join {
             version_read: None,
             switch_to: None,
             focus: false,
+            space: SpaceProbe::default(),
         }
     }
 
@@ -251,6 +256,15 @@ impl Join {
             .and_then(|r| r.finished_at)
             .is_some_and(|t| t.elapsed() < SETTLE)
     }
+
+    /// Why the downloads can't start (and waiting for room can't) for lack of disk space. Not
+    /// while downloads run or settle: they use up the space they were checked against.
+    fn space_problem(&self, view: &View) -> Option<String> {
+        if self.downloading() || self.settling() {
+            return None;
+        }
+        view.space.warning()
+    }
 }
 
 /// What the join window shows, worked out before drawing.
@@ -284,6 +298,11 @@ struct View {
     down: bool,
     /// It answered within the last few seconds.
     fresh: bool,
+    /// The size of the mods in `need`, the free space on the Workshop library's drive (if read),
+    /// and whether they fit.
+    downloads: Downloads,
+    free: Option<u64>,
+    space: Space,
 }
 
 impl View {
@@ -423,7 +442,11 @@ impl App {
         if self.local_loaded.elapsed() > Duration::from_secs(2) {
             self.reload_local();
         }
-        self.join.as_mut().unwrap().game_running = launch::game_running_lately();
+        let join = self.join.as_mut().unwrap();
+        join.game_running = launch::game_running_lately();
+        if let Ok(install) = &self.install {
+            join.space.poll(&self.ctx, &install.workshop);
+        }
     }
 
     fn join_view(&self, addr: &str) -> View {
@@ -445,16 +468,26 @@ impl App {
             .map(|i| i.version.clone())
             .filter(|v| !v.is_empty())
             .unwrap_or(server.version.clone());
+        let need: Vec<u64> = states
+            .iter()
+            .filter(|(_, s)| matches!(s, ModState::Missing | ModState::Outdated))
+            .map(|(m, _)| m.id)
+            .collect();
+        let downloads = prejoin::downloads(&need, &self.details);
+        let free = self
+            .install
+            .as_ref()
+            .ok()
+            .and_then(|i| join.space.free(&i.workshop));
         View {
             players,
             slots,
             queue: seen.queue.or(server.queue).filter(|q| *q > 0),
             no_queue: seen.queue == Some(0),
-            need: states
-                .iter()
-                .filter(|(_, s)| matches!(s, ModState::Missing | ModState::Outdated))
-                .map(|(m, _)| m.id)
-                .collect(),
+            space: prejoin::space(&downloads, free),
+            free: free.map(|f| f.bytes),
+            downloads,
+            need,
             missing: count(ModState::Missing),
             outdated: count(ModState::Outdated),
             not_workshop: count(ModState::NotWorkshop),
@@ -550,7 +583,8 @@ impl App {
         let password_ok = !view.locked || !join.password.is_empty();
         // DayZ won't join a server on another version.
         let same_version = view.other_version.is_none();
-        (view.room() && ready && mods_known && password_ok && same_version)
+        let space_ok = join.space_problem(view).is_none();
+        (view.room() && ready && mods_known && password_ok && same_version && space_ok)
             .then(|| Action::Launch(view.workshop_ids()))
     }
 
@@ -691,7 +725,7 @@ impl App {
             );
         }
         let install = self.install.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let extra = launch::parse_extra(&self.settings.extra_args)?;
+        let extra = launch::added_args(&self.settings)?;
         let password = self
             .join
             .as_ref()
@@ -869,16 +903,35 @@ fn download_section(ui: &mut egui::Ui, view: &View, join: &Join, action: &mut Op
         if view.outdated > 0 {
             parts.push(format!("{} to update", view.outdated));
         }
-        ui.label(RichText::new(parts.join(", ")).strong());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(parts.join(", ")).strong());
+            let mut size = view.downloads.describe();
+            if let Some(free) = view.free {
+                size = format!("{size} · {} free", disk::format_size(free));
+            }
+            ui.label(RichText::new(size).weak());
+        });
+        let space_problem = join.space_problem(view);
+        if let Some(problem) = &space_problem {
+            ui.label(RichText::new(problem).color(ERROR));
+        }
         ui.horizontal_wrapped(|ui| {
             if view.helper {
                 let busy = join.downloading();
                 if ui
-                    .add_enabled(!busy, egui::Button::new("⬇ Download with Steam"))
+                    .add_enabled(
+                        !busy && space_problem.is_none(),
+                        egui::Button::new("⬇ Download with Steam"),
+                    )
                     .on_hover_text(
                         "Subscribes and downloads through your Steam client. Steam shows DayZ as \
                          running until it's done.",
                     )
+                    .on_disabled_hover_text(if busy {
+                        "Downloads are running"
+                    } else {
+                        "Not enough disk space; free some up first"
+                    })
                     .clicked()
                 {
                     *action = Some(Action::Download(view.need.clone()));
@@ -886,7 +939,15 @@ fn download_section(ui: &mut egui::Ui, view: &View, join: &Join, action: &mut Op
                 if busy && ui.button("Cancel").clicked() {
                     *action = Some(Action::CancelDownload);
                 }
-            } else if view.has_key && ui.button("Subscribe with my Steam key").clicked() {
+            } else if view.has_key
+                && ui
+                    .add_enabled(
+                        space_problem.is_none(),
+                        egui::Button::new("Subscribe with my Steam key"),
+                    )
+                    .on_disabled_hover_text("Not enough disk space; free some up first")
+                    .clicked()
+            {
                 *action = Some(Action::Subscribe(view.need.clone()));
             }
             if ui
@@ -951,6 +1012,10 @@ fn wait_section(
         ui.label(RichText::new(situation).color(WARN));
     }
     let needs_password = view.locked && join.password.is_empty();
+    // The details are with the mods, above.
+    let no_space = join
+        .space_problem(view)
+        .map(|_| "Not enough disk space for the mod updates");
     ui.horizontal(|ui| {
         if waiting {
             ui.spinner();
@@ -963,6 +1028,7 @@ fn wait_section(
                 None if view.other_version.is_some() => {
                     but(ui, "the server runs another version of DayZ")
                 }
+                None if no_space.is_some() => but(ui, "not enough disk space for the mod updates"),
                 None if view.down => ui.label("Waiting for it to come back with room…"),
                 None => ui.label("Waiting for a free slot with no queue…"),
             };
@@ -971,7 +1037,9 @@ fn wait_section(
             }
             return;
         }
-        let why_not = not_ready.or(needs_password.then_some("Type the password first"));
+        let why_not = not_ready
+            .or(no_space)
+            .or(needs_password.then_some("Type the password first"));
         if ui
             .add_enabled(
                 why_not.is_none(),
