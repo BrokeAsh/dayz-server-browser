@@ -179,7 +179,7 @@ impl App {
     /// After a listed server answered: notes whether its count disagrees with the list's. Only
     /// a fresh list's count is held against it, but an answer that agrees always clears it.
     /// Servers hidden for disagreeing a while ago come back, to be asked again.
-    pub(super) fn screen_answer(&mut self, addr: &str) {
+    pub(super) fn screen_answer(&mut self, addr: &str, answered: bool) {
         if self.screen.disagreements.forget_old(Instant::now()) {
             self.pending_resort = true;
         }
@@ -194,7 +194,13 @@ impl App {
         if i >= self.listed {
             return;
         }
-        if let Some(info) = self.live.get(addr).and_then(|l| l.info.as_ref()) {
+        // A server that didn't answer keeps its last answer, which mustn't count again.
+        if let Some(info) = self
+            .live
+            .get(addr)
+            .and_then(|l| l.info.as_ref())
+            .filter(|_| answered)
+        {
             self.screen.disagreements.answer(
                 addr,
                 self.servers[i].players,

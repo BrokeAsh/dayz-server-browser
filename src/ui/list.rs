@@ -327,10 +327,19 @@ impl App {
         for (i, cell) in cells.iter().enumerate().skip(1) {
             let x = cell.right() + half_gap;
             let rect = egui::Rect::from_x_y_ranges(x - 4.0..=x + 4.0, cell.y_range());
+            // The divider after the server name belongs to the map (always shown, and first),
+            // on its left.
+            let (column, sign) = if i == 1 {
+                (MAP, -1.0)
+            } else {
+                (shown[i - 2], 1.0)
+            };
+            // Named after its column, not its place: a column that comes back as another narrows
+            // mustn't take over a drag.
             let response = ui
                 .interact(
                     rect,
-                    ui.id().with(("column divider", i)),
+                    ui.id().with(("column divider", column, i == 1)),
                     Sense::click_and_drag(),
                 )
                 .on_hover_cursor(egui::CursorIcon::ResizeColumn);
@@ -340,13 +349,6 @@ impl App {
                 ui.visuals().widgets.noninteractive.bg_stroke
             };
             ui.painter().vline(x, cell.y_range().shrink(3.0), stroke);
-            // The divider after the server name belongs to the map (always shown, and first),
-            // on its left.
-            let (column, sign) = if i == 1 {
-                (MAP, -1.0)
-            } else {
-                (shown[i - 2], 1.0)
-            };
             let width = &mut self.state.columns[column];
             if response.double_clicked() {
                 *width = COLUMNS[column];

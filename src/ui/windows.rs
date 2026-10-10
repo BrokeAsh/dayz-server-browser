@@ -44,12 +44,12 @@ pub(super) fn placed<'a>(
 }
 
 /// At the start of each frame: works out whether Escape closes a window this frame, and which.
-/// It doesn't while a menu or list is open (Escape closes that), while a text field outside the
+/// It doesn't while a menu, list, or confirmation is open (Escape closes that), while a text field outside the
 /// frontmost window has the focus (Escape leaves the field), or while `busy` (Escape is wanted
 /// for something else, such as cancelling the choice of a hotkey).
 pub(super) fn begin_frame(ctx: &egui::Context, busy: bool) {
     let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape) && i.modifiers.is_none());
-    let menu = egui::Popup::is_any_open(ctx);
+    let menu = egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.top_modal_layer()).is_some();
     with_open(ctx, |open| {
         let shown = std::mem::take(&mut open.shown);
         open.stack.retain(|id| shown.contains(id));

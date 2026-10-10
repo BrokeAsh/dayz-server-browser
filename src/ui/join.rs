@@ -280,6 +280,9 @@ impl Join {
     }
 }
 
+/// Why waiting for room can't launch: the mod updates wouldn't fit.
+const SPACE_FOR_UPDATES: &str = "Not enough disk space for the mod updates";
+
 /// What the join window shows, worked out before drawing.
 struct View {
     server: Server,
@@ -364,7 +367,15 @@ impl App {
         self.join_checks();
         let view = self.join_view(&addr);
         let not_ready = self.not_ready(&view);
-        let mut action = self.watch_step(&view, not_ready.is_none());
+        // Waiting launches by itself, so it also waits for disk space for the mod updates; a
+        // launch by hand with mods that couldn't be updated is the player's call (it's warned).
+        let space_problem = self.join.as_ref().and_then(|j| j.space_problem(&view));
+        let wait_blocker = not_ready.clone().or_else(|| {
+            space_problem
+                .as_ref()
+                .map(|_| SPACE_FOR_UPDATES.to_string())
+        });
+        let mut action = self.watch_step(&view, wait_blocker.is_none());
 
         let join = self.join.as_mut().unwrap();
         let id = egui::Id::new(WINDOW);
@@ -408,7 +419,7 @@ impl App {
                         .color(WARN),
                     );
                 }
-                wait_section(ui, &view, join, not_ready.as_deref(), &mut action);
+                wait_section(ui, &view, join, wait_blocker.as_deref(), &mut action);
                 if join.game_running {
                     ui.label(RichText::new("DayZ is already running; close it first.").color(WARN));
                 }
@@ -427,6 +438,13 @@ impl App {
                     let launch = ui
                         .add_enabled(not_ready.is_none(), egui::Button::new(RichText::new("  Launch DayZ  ").strong()))
                         .on_disabled_hover_text(not_ready.as_deref().unwrap_or_default());
+                    let launch = if space_problem.is_some() {
+                        launch.on_hover_text(
+                            "The mod updates don't fit on the disk, so the server may turn you away",
+                        )
+                    } else {
+                        launch
+                    };
                     if launch.clicked() {
                         action = Some(Action::Launch(view.workshop_ids()));
                     }
@@ -544,9 +562,6 @@ impl App {
             "Downloads are still running".into()
         } else if join.settling() {
             "Steam is finishing the downloads…".into()
-        } else if join.space_problem(view).is_some() {
-            // Steam couldn't update the outdated mods, so joining would likely fail.
-            "Not enough disk space for the mod updates".into()
         } else if join.game_running {
             "DayZ is already running".into()
         } else {

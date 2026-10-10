@@ -559,11 +559,12 @@ impl App {
                     (old, new) => old != new,
                 };
                 live.ping = pong.ping;
-                if pong.info.is_some() {
+                let answered = pong.info.is_some();
+                if answered {
                     live.info = pong.info;
                 }
                 live.at = Some(Instant::now());
-                self.screen_answer(&pong.addr);
+                self.screen_answer(&pong.addr, answered);
                 let counts_changed = self.answer_matters() && counts(self) != before;
                 if (self.ping_matters() && ping_moved) || counts_changed {
                     // Not straight away: rows moving under the pointer make the list unusable.
