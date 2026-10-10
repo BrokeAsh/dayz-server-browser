@@ -23,6 +23,8 @@ pub struct SettingsWindow {
     game_dir: String,
     game_message: Option<String>,
     hotkey: String,
+    /// The bundled overlay's version.
+    pub(super) overlay_version: Option<String>,
     capturing: bool,
     hotkey_message: Option<(String, bool)>,
 }
@@ -41,6 +43,7 @@ impl SettingsWindow {
             game_dir: shown(settings.game_dir.as_ref()),
             game_message: None,
             hotkey: overlay::hotkey(),
+            overlay_version: overlay::program().and_then(|p| overlay::version(&p)),
             capturing: false,
             hotkey_message: None,
         }
@@ -78,7 +81,7 @@ impl App {
                 ui.separator();
                 self.overlay_section(ui, &mut window);
                 ui.separator();
-                self.updates_section(ui);
+                self.updates_section(ui, &window);
                 if !self.state.added.is_empty() {
                     ui.separator();
                     self.added_section(ui);

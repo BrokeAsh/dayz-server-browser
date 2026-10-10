@@ -82,11 +82,16 @@ fn agent() -> &'static ureq::Agent {
 pub fn check() -> Result<Option<Release>> {
     // For testing against a stand-in release.
     let url = std::env::var("DAYZ_BROWSER_RELEASES_URL").unwrap_or_else(|_| LATEST.into());
-    let release: GithubRelease = agent()
+    let mut response = match agent()
         .get(&url)
         .header("Accept", "application/vnd.github+json")
         .call()
-        .context("couldn't ask GitHub for the latest version")?
+    {
+        // No release published yet.
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        result => result.context("couldn't ask GitHub for the latest version")?,
+    };
+    let release: GithubRelease = response
         .body_mut()
         .read_json()
         .context("GitHub's answer about the latest version was unreadable")?;

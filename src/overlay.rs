@@ -23,6 +23,17 @@ pub fn program() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The overlay program's version, as it says with `--version` (`dayz-map 0.2.0`).
+pub fn version(program: &Path) -> Option<String> {
+    let output = quiet(program)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    text.split_whitespace().nth(1).map(str::to_string)
+}
+
 fn quiet(program: &Path) -> Command {
     let mut command = Command::new(program);
     command

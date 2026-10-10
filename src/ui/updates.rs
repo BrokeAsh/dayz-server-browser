@@ -5,6 +5,7 @@ use eframe::egui::{self, RichText};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::settings::SettingsWindow;
 use super::{App, ERROR, GOOD, Msg};
 use crate::update::{self, Release};
 use crate::{launch, overlay};
@@ -252,7 +253,7 @@ impl App {
     }
 
     /// The settings' Updates section.
-    pub(super) fn updates_section(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn updates_section(&mut self, ui: &mut egui::Ui, window: &SettingsWindow) {
         ui.heading("Updates");
         ui.checkbox(
             &mut self.settings.check_updates,
@@ -263,7 +264,11 @@ impl App {
         );
         let mut check = false;
         ui.horizontal(|ui| {
-            ui.label(format!("This is version {}.", update::VERSION));
+            ui.label(match &window.overlay_version {
+                Some(overlay) => format!("Browser {}, map overlay {overlay}.", update::VERSION),
+                None => format!("Browser {}.", update::VERSION),
+            })
+            .on_hover_text("Updates bring both: the overlay comes with the browser");
             check = ui
                 .add_enabled(!self.update.busy(), egui::Button::new("Check now"))
                 .clicked();
@@ -272,7 +277,7 @@ impl App {
                     ui.spinner();
                 }
                 UpdateStatus::UpToDate => {
-                    ui.label(RichText::new("It's the latest.").color(GOOD));
+                    ui.label(RichText::new("✔ Up to date").color(GOOD));
                 }
                 UpdateStatus::Available(r) => {
                     ui.label(
