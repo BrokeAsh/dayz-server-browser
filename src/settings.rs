@@ -2,6 +2,7 @@
 //! filters, favorites, recent servers).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::server::{Filters, SortBy};
@@ -106,6 +107,9 @@ pub struct State {
     /// The date (Unix time) of the newest DayZ news post the user has seen.
     #[serde(deserialize_with = "lenient_u64")]
     pub news_seen: u64,
+    /// The user's notes on servers, by `ip:query_port`.
+    #[serde(deserialize_with = "notes")]
+    pub notes: BTreeMap<String, String>,
 }
 
 pub const COLUMNS: [f32; 6] = [100.0, 64.0, 48.0, 48.0, 44.0, 44.0];
@@ -139,8 +143,24 @@ impl Default for State {
             columns: COLUMNS,
             added: Vec::new(),
             news_seen: 0,
+            notes: BTreeMap::new(),
         }
     }
+}
+
+/// Reads the notes, skipping any that aren't text rather than failing the whole state.
+fn notes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    let serde_json::Value::Object(map) = value else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(map
+        .into_iter()
+        .filter_map(|(addr, note)| match note {
+            serde_json::Value::String(note) if !note.trim().is_empty() => Some((addr, note)),
+            _ => None,
+        })
+        .collect())
 }
 
 impl State {
@@ -171,6 +191,19 @@ impl State {
             self.favorites.remove(i);
         } else {
             self.favorites.push(addr.to_string());
+        }
+    }
+
+    /// Sets a server's note; an empty one removes it. Returns whether it changed.
+    pub fn set_note(&mut self, addr: &str, note: &str) -> bool {
+        let note = note.trim();
+        if note.is_empty() {
+            self.notes.remove(addr).is_some()
+        } else if self.notes.get(addr).is_some_and(|n| n == note) {
+            false
+        } else {
+            self.notes.insert(addr.to_string(), note.to_string());
+            true
         }
     }
 
@@ -258,5 +291,37 @@ mod tests {
         assert!(!settings.overlay);
         let settings: Settings = toml::from_str("discord_presence = false\n").unwrap();
         assert!(!settings.discord_presence);
+    }
+
+    #[test]
+    fn keeps_notes() {
+        // Saved before there were notes.
+        let state: State = serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"]}"#).unwrap();
+        assert!(state.notes.is_empty());
+        assert_eq!(state.favorites, ["1.2.3.4:2303"]);
+
+        let mut state = State::default();
+        assert!(state.set_note("1.2.3.4:2303", "  Base at the NWAF\nCode 1234 "));
+        assert!(!state.set_note("1.2.3.4:2303", "Base at the NWAF\nCode 1234"));
+        assert!(state.set_note("5.6.7.8:27016", "Friends play here"));
+        let saved = serde_json::to_string(&state).unwrap();
+        let mut read: State = serde_json::from_str(&saved).unwrap();
+        assert_eq!(read.notes, state.notes);
+        assert_eq!(read.notes["1.2.3.4:2303"], "Base at the NWAF\nCode 1234");
+        // An empty note removes it.
+        assert!(read.set_note("5.6.7.8:27016", " \n "));
+        assert!(!read.set_note("5.6.7.8:27016", ""));
+        assert_eq!(read.notes.len(), 1);
+
+        // Odd values are skipped, not the whole state lost.
+        let state: State = serde_json::from_str(
+            r#"{"favorites":["a"],"notes":{"1.2.3.4:2303":"ok","5.6.7.8:2303":5,"9.9.9.9:1":""}}"#,
+        )
+        .unwrap();
+        assert_eq!(state.notes.len(), 1);
+        assert_eq!(state.favorites, ["a"]);
+        let state: State = serde_json::from_str(r#"{"notes":"oops","favorites":["a"]}"#).unwrap();
+        assert!(state.notes.is_empty());
+        assert_eq!(state.favorites, ["a"]);
     }
 }

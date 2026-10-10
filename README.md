@@ -16,6 +16,9 @@ open, the overlay runs in the background, ready for the game.
   queued server, it can wait and join as soon as there's a free slot and no queue, such as right
   after a restart.
 - Connects by address to servers the list doesn't have.
+- Notes on servers, which the search looks in too.
+- Records how many play on your favorite and recent servers while it's open, charts the last day
+  or week, and tells when a server usually restarts.
 - Optional: use Steam's own server list with your Steam Web API key instead of DZSA's.
 - Shows the DayZ developers' latest news from Steam, with a count of new posts on the News
   button.
@@ -63,6 +66,19 @@ never in the settings file or logs. Don't share it: it's tied to your Steam acco
 port). Servers answer queries on a separate port, most often the game port + 1 or 27016, so the
 browser asks the likely ones and keeps the server that says it plays on that port. Servers found
 this way stay in the list (until removed) and are looked up again each time the browser starts.
+
+### Notes and player history
+
+Right-click a server and pick **Add note…** (or **Add note** in the details panel) to write
+something down about it. A server with a note has a small note mark after its name in the list;
+hover it to read the note. Notes are saved with your favorites. Empty a note to remove it.
+
+Sites that keep player history want a paid key or have no API, so the browser keeps its own: while
+it's open, it asks your favorite and recent servers for their player count every 5 minutes (and
+keeps answers it gets anyway), for two weeks. The details panel charts the last 24 hours or 7 days.
+When a server stops answering for a few minutes, or its in-game clock is set back, that counts as
+a restart; once those fall at the same times of day on several days, the panel says when it usually
+restarts (in your local time). Nothing is recorded while the browser is closed.
 
 ### Game version
 
@@ -154,6 +170,8 @@ release downloads include it. Valve's library isn't part of this repository.
 - Settings: `~/.config/dayz-browser/config.toml` (Windows: `%APPDATA%\dayz-browser\config`).
 - Favorites, recent servers, filters, and the cached list: `~/.local/share/dayz-browser/`
   (Windows: `%APPDATA%\dayz-browser\data`).
+- Notes are in `state.json` there, and player history in its `history` folder (a small file per
+  server).
 
 ## Credits
 
