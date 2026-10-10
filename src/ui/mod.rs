@@ -1616,12 +1616,24 @@ impl App {
         });
     }
 
+    /// Opens the join window for a server. If it's open for that server already, it's kept (with
+    /// its password, waiting, and downloads) and brought to the front; if it's busy waiting or
+    /// downloading for another, it asks before switching.
     fn open_join(&mut self, addr: &str) {
         let Some(&i) = self.index.get(addr) else {
             return;
         };
         if self.selected.as_deref() != Some(addr) {
             self.select(addr, false);
+        }
+        let same = self.join.as_ref().is_some_and(|j| j.addr == addr);
+        if let Some(join) = self.join.as_mut()
+            && (same || join.busy())
+        {
+            join.ask_to_switch(addr, &self.servers[i].name);
+            if !same {
+                return;
+            }
         }
         // A fresh mod list for joining, even if one was fetched earlier.
         if !matches!(self.rules.get(addr), Some(Fetch::Loading)) {
@@ -1631,7 +1643,9 @@ impl App {
         self.reload_local();
         // DayZ may have updated since the browser started.
         self.read_game_version();
-        self.join = Some(join::Join::new(&self.servers[i]));
+        if !same {
+            self.join = Some(join::Join::new(&self.servers[i]));
+        }
     }
 }
 
