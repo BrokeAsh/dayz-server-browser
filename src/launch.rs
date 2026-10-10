@@ -154,9 +154,61 @@ impl Launch {
     }
 }
 
-/// Splits the extra-arguments setting like a command line (quotes allowed).
+/// Splits the extra-arguments setting like a command line (quotes allowed), by the rules of
+/// this platform's command lines: [`split_windows`] on Windows, [`split_posix`] elsewhere. The
+/// launch, the settings window's preview, and its conflict check all split through this.
 pub fn parse_extra(text: &str) -> Result<Vec<String>> {
-    shlex::split(text).context("the extra launch arguments have an unclosed quote")
+    #[cfg(windows)]
+    let args = split_windows(text);
+    #[cfg(not(windows))]
+    let args = split_posix(text);
+    args.context("the extra launch arguments have an unclosed quote")
+}
+
+/// Splits like a Unix shell: single and double quotes, and backslash escapes. `None` for an
+/// unclosed quote.
+#[cfg_attr(windows, allow(dead_code))]
+fn split_posix(text: &str) -> Option<Vec<String>> {
+    shlex::split(text)
+}
+
+/// Splits like a Windows command line, so paths keep their backslashes
+/// (`-profiles=C:\Users\me\DayZ`): whitespace separates arguments, and double quotes group text
+/// with spaces (`-profiles="C:\My Games\DayZ"`) and are removed. Unlike `CommandLineToArgvW`, a
+/// backslash before a quote is a backslash too, so a quoted folder may end in one; DayZ's
+/// arguments never need a literal quote. `None` for an unclosed quote.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn split_windows(text: &str) -> Option<Vec<String>> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    // Inside an argument (even an empty quoted one, `""`).
+    let mut started = false;
+    let mut quoted = false;
+    for c in text.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            c => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return None;
+    }
+    if started {
+        args.push(current);
+    }
+    Some(args)
 }
 
 /// Extra arguments that the browser already sets.
@@ -318,6 +370,37 @@ mod tests {
         assert!(parse_extra(r#"-name="open"#).is_err());
         let conflicts = managed_conflicts(&["-exThreads=7".into(), "-Connect=1.2.3.4".into()]);
         assert_eq!(conflicts, ["-Connect=1.2.3.4"]);
+    }
+
+    #[test]
+    fn splits_like_a_unix_shell() {
+        let args = split_posix(r#"-a 'one two' "three four" five\ six -p=C:\x"#).unwrap();
+        assert_eq!(args, ["-a", "one two", "three four", "five six", "-p=C:x"]);
+        assert!(split_posix("-name='open").is_none());
+    }
+
+    #[test]
+    fn splits_like_a_windows_command_line() {
+        let split = |text| split_windows(text).unwrap();
+        // Backslashes stay, quoted or not.
+        assert_eq!(
+            split(r"-profiles=C:\Users\me\DayZ -doLogs"),
+            [r"-profiles=C:\Users\me\DayZ", "-doLogs"]
+        );
+        assert_eq!(
+            split(r#"-profiles="C:\My Games\DayZ\" -name="Survivor One""#),
+            [r"-profiles=C:\My Games\DayZ\", "-name=Survivor One"]
+        );
+        // Quotes may be anywhere in an argument; any whitespace separates.
+        assert_eq!(split("  \"a b\"c \t d\n"), ["a bc", "d"]);
+        assert_eq!(split(r#"-x "" -y"#), ["-x", "", "-y"]);
+        // Single quotes are ordinary characters on Windows.
+        assert_eq!(split("'a b'"), ["'a", "b'"]);
+        assert!(split("   ").is_empty());
+        assert!(split_windows(r#"-name="open"#).is_none());
+        // Conflicts are found the same way.
+        let args = split(r#"-Connect=1.2.3.4 -profiles="C:\x y""#);
+        assert_eq!(managed_conflicts(&args), ["-Connect=1.2.3.4"]);
     }
 
     #[test]

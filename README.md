@@ -181,7 +181,9 @@ Settings has the common launch options, added to every launch:
   background** (`-noPause`), **Windowed** (`-window`), **Empty main menu** (`-world=empty`, loads
   faster), and **CPU cores** (`-cpuCount=`, off by default).
 
-Anything else goes in **Extra launch arguments**, written as on a command line. Settings shows
+Anything else goes in **Extra launch arguments**, written as on a command line: on Windows as
+in a shortcut (backslashes in paths are kept, and double quotes group a path with spaces, as in
+`-profiles="C:\My Games\DayZ"`), on Linux as in a shell. Settings shows
 the arguments a launch adds, and flags extra arguments that repeat the options or the ones the
 browser sets itself (`-connect`, `-mod`, `-password`, `-port`). On Linux, the options count
 towards Steam's limit of about 1,000 characters.
