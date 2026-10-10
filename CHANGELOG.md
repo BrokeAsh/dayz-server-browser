@@ -15,3 +15,5 @@
   seconds, and a ping sort ignores small ping changes.
 - The map overlay is built in: it comes from the overlay's repository as a git submodule and ships
   next to the browser, so it no longer has to be installed or found separately.
+- Updates from the browser: it looks for a new release at start, and an Update button in the top
+  bar downloads it, checks it, replaces the files, and restarts the browser and the overlay.

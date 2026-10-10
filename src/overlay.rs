@@ -73,8 +73,8 @@ pub fn start(program: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Quits the overlay and starts it again, so it reads its config anew.
-pub fn restart(program: &Path) -> Result<()> {
+/// Quits the overlay, if it's running, and waits for it to go.
+pub fn quit(program: &Path) -> Result<()> {
     if is_running(program) {
         let _ = quiet(program).arg("quit").status();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -85,6 +85,12 @@ pub fn restart(program: &Path) -> Result<()> {
             std::thread::sleep(Duration::from_millis(200));
         }
     }
+    Ok(())
+}
+
+/// Quits the overlay and starts it again, so it reads its config anew.
+pub fn restart(program: &Path) -> Result<()> {
+    quit(program)?;
     start(program)
 }
 

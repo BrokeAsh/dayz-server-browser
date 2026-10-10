@@ -1,3 +1,4 @@
 [submodule "overlay"]
 	path = overlay
 	url = https://github.com/BrokeAsh/dayz-map-overlay.git
+	branch = main

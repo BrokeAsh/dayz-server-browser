@@ -178,7 +178,7 @@ impl Join {
         }
     }
 
-    fn downloading(&self) -> bool {
+    pub(super) fn downloading(&self) -> bool {
         self.run.as_ref().is_some_and(|r| !r.finished())
     }
 

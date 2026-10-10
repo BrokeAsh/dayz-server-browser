@@ -16,6 +16,7 @@ mod settings;
 mod steam;
 mod steam_api;
 mod ui;
+mod update;
 mod vdf;
 mod version;
 #[cfg(windows)]

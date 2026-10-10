@@ -38,6 +38,8 @@ pub struct Settings {
     pub overlay: bool,
     /// The DayZ folder; found through Steam when unset.
     pub game_dir: Option<PathBuf>,
+    /// Look for a new version of the browser at start.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +49,7 @@ impl Default for Settings {
             extra_args: String::new(),
             overlay: true,
             game_dir: None,
+            check_updates: true,
         }
     }
 }

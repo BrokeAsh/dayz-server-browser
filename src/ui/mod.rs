@@ -5,6 +5,7 @@
 mod connect;
 mod join;
 mod settings;
+mod updates;
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -56,6 +57,7 @@ pub enum Msg {
     Toast(String),
     /// The installed game's version.
     GameVersion(Result<String, String>),
+    Update(updates::UpdateMsg),
     /// A server looked up by address, and what to do with it.
     Found {
         addr: String,
@@ -168,6 +170,8 @@ pub struct App {
     connect_window: Option<connect::ConnectWindow>,
     settings_window: Option<settings::SettingsWindow>,
     toast: Option<(String, Instant)>,
+    update: updates::UpdateStatus,
+    last_update_check: Option<Instant>,
 }
 
 impl App {
@@ -234,11 +238,19 @@ impl App {
             connect_window: None,
             settings_window: None,
             toast: None,
+            update: updates::UpdateStatus::Idle,
+            last_update_check: None,
             settings,
         };
         app.load_list(false);
         app.check_overlay(true);
         app.read_game_version();
+        app.check_for_update_now_and_then();
+        // Leftovers of an update; a moment later, once the version it replaced has quit.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(10));
+            crate::update::clean_up();
+        });
         for addr in app.state.added.clone() {
             app.look_up(addr, Then::Keep);
         }
@@ -528,6 +540,7 @@ impl App {
                 self.view_dirty = true;
             }
             Msg::Found { addr, result, then } => self.found(&addr, result, then),
+            Msg::Update(msg) => self.update_msg(msg),
         }
     }
 
@@ -849,6 +862,7 @@ impl App {
                 if ui.button("⚙ Settings").clicked() && self.settings_window.is_none() {
                     self.settings_window = Some(settings::SettingsWindow::new(&self.settings));
                 }
+                self.update_button(ui);
                 let source = match self.list.source {
                     Source::Dzsa => "DZSA list",
                     Source::Steam => "Steam list",
@@ -1614,6 +1628,7 @@ impl eframe::App for App {
                 log::warn!("couldn't save the browser state: {e:#}");
             }
         }
+        self.check_for_update_now_and_then();
     }
 
     fn on_exit(&mut self) {

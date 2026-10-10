@@ -1,0 +1,90 @@
+name: Update the overlay
+
+# Keeps the overlay submodule on the overlay repository's latest main: every hour it looks for
+# new overlay commits, and if there are any, tests the browser with them on Linux and Windows and
+# commits the update here. (Commits made with the workflow's token don't start the CI workflow,
+# which is why the tests run here.) Run it by hand from the Actions tab to update right away.
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+# One update at a time.
+concurrency: overlay-update
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    outputs:
+      new: ${{ steps.look.outputs.new }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: look
+        name: Look for new overlay commits
+        run: |
+          pinned=$(git ls-tree HEAD overlay | awk '{print $3}')
+          latest=$(git ls-remote https://github.com/BrokeAsh/dayz-map-overlay.git refs/heads/main | cut -f1)
+          echo "pinned $pinned, overlay main $latest"
+          if [ -n "$latest" ] && [ "$latest" != "$pinned" ]; then
+            echo "new=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: check
+    if: needs.check.outputs.new != ''
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Move the overlay to its new commit
+        shell: bash
+        run: git -C overlay fetch origin main && git -C overlay checkout --detach ${{ needs.check.outputs.new }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --release -- -D warnings
+      - run: cargo test --workspace --release
+
+  commit:
+    needs: [check, test]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Commit the new overlay
+        run: |
+          old=$(git ls-tree HEAD overlay | awk '{print $3}')
+          new=${{ needs.check.outputs.new }}
+          git -C overlay fetch origin main
+          git -C overlay checkout --detach "$new"
+          # Keep Cargo.lock in step with the overlay's dependencies.
+          cargo metadata --format-version 1 > /dev/null
+          {
+            echo "Overlay: update to ${new:0:7}"
+            echo
+            git -C overlay log --oneline --no-decorate "$old..$new"
+          } > message.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add overlay Cargo.lock
+          git commit -F message.txt
+          # Main may have moved on while the tests ran.
+          git pull --rebase
+          git push

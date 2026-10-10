@@ -77,6 +77,8 @@ impl App {
                 self.launch_section(ui, &mut window);
                 ui.separator();
                 self.overlay_section(ui, &mut window);
+                ui.separator();
+                self.updates_section(ui);
                 if !self.state.added.is_empty() {
                     ui.separator();
                     self.added_section(ui);

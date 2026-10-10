@@ -21,6 +21,27 @@ open, the overlay runs in the background, ready for the game.
 Status: early. Tested on Linux with a real DayZ install, including mod downloads and joining;
 Windows is only tested in a VM so far.
 
+## Install and update
+
+Download the latest release from the
+[releases page](https://github.com/BrokeAsh/dayz-server-browser/releases) and unpack it in a folder
+you can write to:
+
+- **Linux:** for example `~/.local/opt/dayz-browser`, then run `dayz-browser` from there (or link
+  it into `~/.local/bin`).
+- **Windows:** any folder, such as one in your Documents, then run `dayz-browser.exe`.
+
+Everything comes in that one folder: the browser, the Workshop helper, the map overlay, and
+Valve's Steamworks library.
+
+To update, click **Update** in the top bar when it appears. The browser asks GitHub for the
+latest release when it starts (and twice a day while it stays open). The update downloads the
+new release, checks it against the release's checksums, replaces the files in the folder, and
+restarts the browser and the overlay; your settings, favorites, and filters stay. Nothing is
+changed if the download fails or doesn't match. It waits while DayZ is running, since it restarts
+the overlay. Settings can turn the check off. If the browser can't write to its own folder (for
+example when a package manager installed it), update it the way you installed it.
+
 ## How it works
 
 ### Server list
@@ -98,8 +119,12 @@ cargo build --release
 ```
 
 This builds `target/release/dayz-browser`, the helper `target/release/dayz-browser-workshop`, and
-the overlay `target/release/dayz-map`. To move to a newer overlay, check out a newer commit in
-`overlay/` and commit the change here.
+the overlay `target/release/dayz-map`.
+
+The overlay follows the overlay repository's `main` by itself: every hour, the "Update the
+overlay" workflow looks for new overlay commits, tests the browser with them on Linux and Windows,
+and commits the submodule update here (run it from the Actions tab to update right away). Users
+get the new overlay with the next browser release.
 The helper needs Valve's Steamworks library next to it (`libsteam_api.so` on Linux,
 `steam_api64.dll` on Windows). The build puts a copy under `target/release/build/steamworks-sys-*/out/`;
 release downloads include it. Valve's library isn't part of this repository.
