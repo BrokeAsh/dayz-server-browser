@@ -86,7 +86,9 @@ usual, and in the game, Y (Z on German keyboards) opens its menu (items, telepor
 camera). It isn't a Workshop mod: the browser downloads its latest GitHub release (about 13 MB)
 into its data folder, and offers an update when a new one comes out. Each map's progress is saved
 in its mission folder (`storage_-1`); updates keep it, and **Reset save** deletes it to start that
-map over. Namalsk needs the Namalsk Island and Namalsk Survival mods, which the window downloads
+map over. An update never deletes a save: if it can't move one back, the window says so and offers
+**Move them back**, and where two saves of a map meet, the newer is played and the other kept
+beside it as `storage_-1.bak`. Namalsk needs the Namalsk Island and Namalsk Survival mods, which the window downloads
 like a server's mods.
 
 - **Linux:** `steam -applaunch 221100 -nolauncher -mission=Missions/<map's mission> -nosplash
