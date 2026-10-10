@@ -537,8 +537,8 @@ mod tests {
         for (key, value) in odd_values(&saved) {
             let mut edited = saved.clone();
             edited[&key] = value.clone();
-            let read: State = serde_json::from_value(edited)
-                .unwrap_or_else(|e| panic!("{key} = {value}: {e}"));
+            let read: State =
+                serde_json::from_value(edited).unwrap_or_else(|e| panic!("{key} = {value}: {e}"));
             if key != "favorites" {
                 assert_eq!(read.favorites, state.favorites, "{key} = {value}");
             }

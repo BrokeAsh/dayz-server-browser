@@ -803,8 +803,7 @@ impl App {
         matches!(
             self.state.sort,
             SortBy::Players | SortBy::Queue | SortBy::Time
-        )
-            || f.hide_other_versions
+        ) || f.hide_other_versions
             || f.hide_password
             || f.hide_empty
             || f.hide_full

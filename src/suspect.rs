@@ -487,7 +487,10 @@ mod tests {
         let at = |secs: u64| start + Duration::from_secs(secs);
         let mut d = Disagreements::default();
         d.answer("a", 60, 2, true, start);
-        assert!(!d.confirmed("a", 60, start), "one answer could be a restart");
+        assert!(
+            !d.confirmed("a", 60, start),
+            "one answer could be a restart"
+        );
         d.answer("a", 60, 3, true, at(60));
         assert!(!d.confirmed("a", 60, at(60)));
         d.answer("a", 60, 3, true, at(150));
@@ -519,7 +522,10 @@ mod tests {
         d.answer("r", 60, 6, true, later);
         assert!(!d.confirmed("r", 60, later), "starts over");
         d.answer("r", 60, 40, true, later + CONFIRM_AFTER);
-        assert!(!d.confirmed("r", 60, later + CONFIRM_AFTER), "players came back");
+        assert!(
+            !d.confirmed("r", 60, later + CONFIRM_AFTER),
+            "players came back"
+        );
         // Forgotten ones are dropped, saying whether one hid a server.
         d.answer("s", 60, 1, true, start);
         d.answer("s", 60, 1, true, start + CONFIRM_AFTER);
@@ -527,7 +533,10 @@ mod tests {
         assert!(!d.forget_old(start + CONFIRM_AFTER));
         assert!(d.forget_old(start + CONFIRM_AFTER + FORGET_AFTER));
         assert!(d.0.contains_key("b"), "answered later");
-        assert!(!d.forget_old(start + CONFIRM_AFTER * 2 + FORGET_AFTER), "b wasn't confirmed");
+        assert!(
+            !d.forget_old(start + CONFIRM_AFTER * 2 + FORGET_AFTER),
+            "b wasn't confirmed"
+        );
         assert!(d.0.is_empty());
 
         let servers = [server("A", "203.0.113.1", 2302, 60)];

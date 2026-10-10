@@ -730,7 +730,11 @@ mod tests {
             ("GW", "bissau", true),
         ] {
             s.country = Some(code.into());
-            assert_eq!(search(text).matches(&s, &Seen::default()), hit, "{text} in {code}");
+            assert_eq!(
+                search(text).matches(&s, &Seen::default()),
+                hit,
+                "{text} in {code}"
+            );
         }
     }
 
