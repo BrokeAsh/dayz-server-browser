@@ -6,7 +6,7 @@ use eframe::egui::{self, RichText};
 use std::net::{IpAddr, SocketAddr};
 
 use super::filters::truncate;
-use super::{App, ERROR, Msg, Then};
+use super::{App, ERROR, Msg, Then, sentence, windows};
 use crate::address;
 use crate::lan::{self, Scan};
 use crate::server::map_title;
@@ -51,7 +51,8 @@ impl App {
         let mut go = false;
         let mut scan = None;
         let mut join_found = None;
-        egui::Window::new("Connect by address")
+        let id = egui::Id::new("connect-window");
+        windows::placed(egui::Window::new("Connect by address"), ctx, id, 360.0)
             .collapsible(false)
             .resizable(false)
             .default_width(360.0)
@@ -65,9 +66,14 @@ impl App {
                             .hint_text("203.0.113.5:2302")
                             .desired_width(240.0),
                     );
+                    // Asked for until the field has it: a window's first frame only measures it,
+                    // and the focus asked for then doesn't stay.
                     if !window.focused {
-                        edit.request_focus();
-                        window.focused = true;
+                        if edit.has_focus() {
+                            window.focused = true;
+                        } else {
+                            edit.request_focus();
+                        }
                     }
                     let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let button = ui.add_enabled(
@@ -88,12 +94,15 @@ impl App {
                     .small(),
                 );
                 if let Some(e) = &window.error {
-                    ui.label(RichText::new(e).color(ERROR));
+                    ui.label(RichText::new(sentence(e)).color(ERROR));
                 }
                 ui.add_space(4.0);
                 ui.separator();
                 scan = network_section(ui, &mut window, &mut join_found);
             });
+        if windows::escape_closes(ctx, id) {
+            open = false;
+        }
         if go && !window.text.trim().is_empty() {
             window.error = None;
             let text = window.text.trim().to_string();
@@ -179,11 +188,13 @@ fn network_section(
         if button.clicked() {
             start = port;
         }
-        ui.label("Also port");
+        ui.label("Extra query port")
+            .on_hover_text("Another query port to ask on each address, for a server that uses one");
         ui.add_enabled(
             !window.scanning,
             egui::TextEdit::singleline(&mut window.scan_port)
-                .hint_text("query")
+                .hint_text("27016")
+                .char_limit(5)
                 .desired_width(52.0),
         );
         if window.scanning {
@@ -196,7 +207,7 @@ fn network_section(
     match &window.scan {
         None => {}
         Some(Err(e)) => {
-            ui.label(RichText::new(e).color(ERROR));
+            ui.label(RichText::new(sentence(e)).color(ERROR));
         }
         Some(Ok(scan)) if scan.found.is_empty() => {
             let ports: Vec<String> = scan.ports.iter().map(u16::to_string).collect();

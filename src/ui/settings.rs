@@ -26,7 +26,8 @@ pub struct SettingsWindow {
     hotkey: String,
     /// The bundled overlay's version.
     pub(super) overlay_version: Option<String>,
-    capturing: bool,
+    /// Waiting for a key to pick as the overlay's hotkey (Escape cancels it).
+    pub(super) capturing: bool,
     hotkey_message: Option<(String, bool)>,
     /// The in-game name, applied like the extra arguments.
     name: String,
@@ -93,7 +94,8 @@ impl App {
         let mut open = true;
         // With the Steam key and servers added by address, it can be taller than a small window.
         let tallest = (ctx.content_rect().height() - 120.0).max(200.0);
-        egui::Window::new("Settings")
+        let id = egui::Id::new("settings-window");
+        super::windows::placed(egui::Window::new("Settings"), ctx, id, 480.0)
             .collapsible(false)
             .resizable(false)
             .default_width(480.0)
@@ -104,6 +106,9 @@ impl App {
                     .min_scrolled_height(tallest)
                     .show(ui, |ui| self.settings_sections(ui, &mut window));
             });
+        if super::windows::escape_closes(ctx, id) {
+            open = false;
+        }
         if !open {
             window.apply_pending(&mut self.settings);
         }
@@ -219,7 +224,7 @@ impl App {
             }
         }
         if let Some(e) = &window.key_error {
-            ui.label(RichText::new(e).color(ERROR));
+            ui.label(RichText::new(super::sentence(e)).color(ERROR));
         }
         ui.label(
             RichText::new(
@@ -266,7 +271,7 @@ impl App {
                 }
             }
             Err(e) => {
-                ui.label(RichText::new(format!("{e:#}")).color(ERROR));
+                ui.label(RichText::new(super::sentence(&format!("{e:#}"))).color(ERROR));
             }
         }
         // What a launch adds, with the edits not applied yet.
@@ -294,7 +299,7 @@ impl App {
                 })
                 .weak(),
             ),
-            Err(e) => ui.label(RichText::new(e).color(ERROR)),
+            Err(e) => ui.label(RichText::new(super::sentence(e)).color(ERROR)),
         };
         let mut use_dir: Option<Option<PathBuf>> = None;
         ui.horizontal(|ui| {
@@ -454,7 +459,7 @@ impl App {
         });
         if let Some((message, error)) = &window.hotkey_message {
             ui.label(if *error {
-                RichText::new(message).color(ERROR)
+                RichText::new(super::sentence(message)).color(ERROR)
             } else {
                 RichText::new(message).weak()
             });

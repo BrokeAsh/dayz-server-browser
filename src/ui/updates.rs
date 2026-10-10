@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::settings::SettingsWindow;
-use super::{App, ERROR, GOOD, Msg, join};
+use super::{App, ERROR, GOOD, Msg, join, sentence};
 use crate::update::{self, Release};
 use crate::{launch, overlay, workshop};
 
@@ -219,40 +219,60 @@ impl App {
         }
     }
 
-    /// The top bar's part: an Update button when there's a new version, then its progress.
+    /// The top bar's part: a short Update button when there's a new version (its hover says
+    /// which, why it failed if it did, and links to what's new), then its progress.
     pub(super) fn update_button(&mut self, ui: &mut egui::Ui) {
         let mut start = None;
         match &self.update {
             UpdateStatus::Available(release) | UpdateStatus::Failed(release, _) => {
                 let failed = match &self.update {
-                    UpdateStatus::Failed(_, e) => Some(e.clone()),
+                    UpdateStatus::Failed(_, e) => Some(sentence(e)),
                     _ => None,
                 };
-                if ui.link("What's new").clicked() {
-                    let _ = open::that(&release.page);
-                }
                 let blocker = self.update_blocker();
-                let label = if failed.is_some() {
-                    "⬆ Try the update again".to_string()
-                } else {
-                    format!("⬆ Update to {}", release.version)
+                let (label, color) = match failed {
+                    Some(_) => ("⬆ Retry update", ERROR),
+                    None => ("⬆ Update", GOOD),
+                };
+                let hover = |ui: &mut egui::Ui, first: &str| {
+                    ui.label(first);
+                    if let Some(e) = &failed {
+                        ui.label(RichText::new(format!("The last try failed: {e}")).color(ERROR));
+                    }
+                    if ui
+                        .link(format!("What's new in {}", release.version))
+                        .clicked()
+                    {
+                        open_page(&release.page);
+                    }
                 };
                 let button = ui
                     .add_enabled(
                         blocker.is_none(),
-                        egui::Button::new(RichText::new(label).strong().color(GOOD)),
+                        egui::Button::new(RichText::new(label).strong().color(color)),
                     )
-                    .on_hover_text(format!(
-                        "Downloads version {} and restarts the browser and the map overlay",
-                        release.version
-                    ))
-                    .on_disabled_hover_text(blocker.unwrap_or_default());
+                    .on_hover_ui(|ui| {
+                        hover(
+                            ui,
+                            &format!(
+                                "Version {} is out. This downloads it and restarts the browser \
+                                 and the map overlay.",
+                                release.version
+                            ),
+                        )
+                    })
+                    .on_disabled_hover_ui(|ui| {
+                        hover(
+                            ui,
+                            &format!(
+                                "Version {} is out. {}.",
+                                release.version,
+                                blocker.unwrap_or_default()
+                            ),
+                        )
+                    });
                 if button.clicked() {
                     start = Some(release.clone());
-                }
-                if let Some(e) = failed {
-                    ui.label(RichText::new("Update failed").color(ERROR))
-                        .on_hover_text(e);
                 }
             }
             UpdateStatus::Downloading(_, done, total) => {
@@ -306,10 +326,22 @@ impl App {
                         RichText::new(format!("{} is out: use Update at the top.", r.version))
                             .color(GOOD),
                     );
+                    if ui.link("What's new").clicked() {
+                        open_page(&r.page);
+                    }
+                }
+                UpdateStatus::Failed(r, e) => {
+                    ui.label(
+                        RichText::new(format!("The update to {} failed.", r.version)).color(ERROR),
+                    )
+                    .on_hover_text(sentence(e));
+                    if ui.link("What's new").clicked() {
+                        open_page(&r.page);
+                    }
                 }
                 UpdateStatus::CheckFailed(e) => {
                     ui.label(RichText::new("Couldn't check").color(ERROR))
-                        .on_hover_text(e);
+                        .on_hover_text(sentence(e));
                 }
                 _ => {}
             }
@@ -317,5 +349,12 @@ impl App {
         if check {
             self.check_for_update();
         }
+    }
+}
+
+/// Opens a release's page in the web browser.
+fn open_page(url: &str) {
+    if let Err(e) = open::that_detached(url) {
+        log::warn!("couldn't open {url}: {e}");
     }
 }

@@ -222,7 +222,7 @@ impl Suspect {
                 format!("It says it has {slots} slots; DayZ servers have at most {MAX_SLOTS}.")
             }
             Self::LongQueue(queue) => {
-                format!("It says {queue} players are waiting, more than a server can queue.")
+                format!("It says {queue} are in queue, more than a server can queue.")
             }
             Self::Disagrees { listed, answered } => {
                 format!("Its own answer says {answered} players; the list says {listed}.")

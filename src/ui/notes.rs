@@ -1,5 +1,5 @@
 //! The user's notes on servers: the editor in the details panel, the way to it from the list's
-//! right-click menu, and the small mark after a noted server's name in the list.
+//! right-click menu, and the small mark drawn after a noted server's name in the list.
 
 use eframe::egui::{self, RichText, Sense};
 
@@ -57,16 +57,20 @@ impl App {
         }
     }
 
-    /// "Add note", beside Join and Favorite, for a server without one.
+    /// "Add note" (or "Edit note" for a server with one), the last of the details panel's
+    /// buttons, so nothing moves under the pointer when it's clicked. It puts the cursor in the
+    /// note.
     pub(super) fn note_button(&mut self, ui: &mut egui::Ui, addr: &str) {
         let editing = self.note_draft.as_ref().is_some_and(|d| d.addr == addr);
-        if !editing
-            && !self.state.notes.contains_key(addr)
-            && ui
-                .button("Add note")
-                .on_hover_text("Write down something to remember about this server")
-                .clicked()
-        {
+        let (label, hint) = if editing || self.state.notes.contains_key(addr) {
+            ("Edit note", "Your note on this server is below")
+        } else {
+            (
+                "Add note",
+                "Write down something to remember about this server",
+            )
+        };
+        if ui.button(label).on_hover_text(hint).clicked() {
             self.edit_note(addr);
         }
     }
@@ -103,6 +107,8 @@ impl App {
             .inner;
         if std::mem::take(&mut draft.focus) {
             response.request_focus();
+            // The details panel may be scrolled past it.
+            response.scroll_to_me(None);
         }
         if response.lost_focus() {
             self.commit_note();
@@ -110,28 +116,14 @@ impl App {
     }
 }
 
-/// A server's name in the list followed by a small note mark; hovering either shows the note.
-/// A long name is cut short so the mark stays in view.
-pub(super) fn noted_name(ui: &mut egui::Ui, name: &str, note: &str) {
-    let mark_width = 10.0 + ui.spacing().item_spacing.x;
-    let room = (ui.available_width() - mark_width).max(0.0);
-    let label = ui
-        .allocate_ui(egui::vec2(room, ui.available_height()), |ui| {
-            ui.add(
-                egui::Label::new(name)
-                    .truncate()
-                    .show_tooltip_when_elided(false),
-            )
-        })
-        .inner;
-    let mark = note_mark(ui);
-    label.union(mark).on_hover_text(note);
-}
+/// How wide the note mark is.
+pub(super) const NOTE_MARK_WIDTH: f32 = 10.0;
 
 /// A small sheet of paper with a folded corner and two lines of writing, drawn rather than taken
 /// from the emoji font, whose notepads are hard to make out at this size.
-fn note_mark(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(10.0, 12.0), Sense::hover());
+pub(super) fn note_mark(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(NOTE_MARK_WIDTH, 12.0), Sense::hover());
     let color = ui.visuals().weak_text_color();
     let stroke = egui::Stroke::new(1.0, color);
     let page = rect.shrink(0.5);
@@ -159,36 +151,4 @@ fn note_mark(ui: &mut egui::Ui) -> egui::Response {
         painter.hline(page.left() + 2.0..=page.right() - 2.0, y, stroke);
     }
     response
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A long name in a narrow column still leaves room for the mark.
-    #[test]
-    fn draws_noted_name() {
-        let ctx = egui::Context::default();
-        for width in [40.0, 300.0] {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width + 50.0, 100.0),
-                )),
-                ..Default::default()
-            };
-            let mut used = 0.0;
-            let mut output = ctx.run_ui(input, |ui| {
-                ui.allocate_ui(egui::vec2(width, 22.0), |ui| {
-                    ui.horizontal(|ui| {
-                        noted_name(ui, &"A very long server name ".repeat(5), "A note");
-                        used = ui.min_rect().width();
-                    });
-                });
-            });
-            // Fonts would go to the GPU here.
-            output.textures_delta.clear();
-            assert!(used <= width + 1.0, "{used} > {width}");
-        }
-    }
 }

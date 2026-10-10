@@ -192,14 +192,15 @@ impl App {
         }
         let mut pick = None;
         for recent in self.state.recent.iter().take(8) {
-            let text = format!(
-                "{} · {}",
-                truncate(&recent.name, 26),
-                map_title(&recent.map)
-            );
+            // On one line, cut short to the panel's width; hovering shows all of it.
+            let map = map_title(&recent.map);
+            let selected = self.selected.as_deref() == Some(&recent.addr);
             if ui
-                .selectable_label(self.selected.as_deref() == Some(&recent.addr), text)
-                .on_hover_text(&recent.name)
+                .add(
+                    egui::Button::selectable(selected, format!("{} · {map}", recent.name))
+                        .truncate(),
+                )
+                .on_hover_text(format!("{}\n{map}", recent.name))
                 .clicked()
             {
                 pick = Some(recent.addr.clone());

@@ -394,11 +394,10 @@ impl App {
         let blocked = self.mods_blocked(&page);
         let id = egui::Id::new(WINDOW);
         if std::mem::take(&mut page.focus) {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+            super::windows::to_front(ctx, id);
         }
         let mut open = true;
-        egui::Window::new("Mods")
-            .id(id)
+        super::windows::placed(egui::Window::new("Mods"), ctx, id, 900.0)
             .collapsible(false)
             .resizable(true)
             .default_size([900.0, 540.0])
@@ -407,7 +406,7 @@ impl App {
             .open(&mut open)
             .show(ctx, |ui| {
                 if let Err(e) = &self.install {
-                    ui.label(RichText::new(e).color(ERROR));
+                    ui.label(RichText::new(super::sentence(e)).color(ERROR));
                     return;
                 }
                 let Some(inventory) = page.inventory.take() else {
@@ -429,6 +428,10 @@ impl App {
                 }
                 page.inventory = Some(inventory);
             });
+        // Not while it's working on the mods.
+        if super::windows::escape_closes(ctx, id) && !page.busy() {
+            open = false;
+        }
         if !open {
             page.open = false;
             page.confirm = None;

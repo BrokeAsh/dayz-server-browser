@@ -8,7 +8,7 @@ use super::screening::CountryChoice;
 use super::{App, WARN, filters::range};
 use crate::a2s::Tags;
 use crate::geo;
-use crate::server::{Daytime, Kind, Server};
+use crate::server::{Daytime, Kind, Seen, Server};
 
 impl App {
     /// The "More filters" section, folded away until opened. Returns whether a filter changed.
@@ -32,6 +32,7 @@ impl App {
             n => format!("More filters ({n})"),
         };
         let mut changed = false;
+        let hidden = self.fakes_hidden();
         egui::CollapsingHeader::new(title)
             .id_salt("more filters")
             .default_open(set > 0)
@@ -39,7 +40,7 @@ impl App {
                 changed |= self.country_filter(ui);
                 let f = &mut self.state.filters;
                 ui.add_space(4.0);
-                ui.label("Servers");
+                ui.label("Type");
                 ui.horizontal(|ui| {
                     changed |= ui.selectable_value(&mut f.kind, Kind::Any, "Any").changed();
                     changed |= ui
@@ -75,12 +76,17 @@ impl App {
                     .on_hover_text("Servers less than 30% full")
                     .changed();
                 let mut hide = !f.show_suspect;
+                let label = match hidden {
+                    0 => "Hide likely fakes".to_string(),
+                    n => format!("Hide likely fakes ({n})"),
+                };
                 if ui
-                    .checkbox(&mut hide, "Hide likely fakes")
+                    .checkbox(&mut hide, label)
                     .on_hover_text(
                         "Servers listed twice, copies of another server, and servers whose \
-                         numbers can't be right. Favorites, recent servers, and servers added \
-                         by address always show.",
+                         numbers can't be right; shown ones have a ⚠ after their name. \
+                         Favorites, recent servers, watched servers, and servers added by \
+                         address always show.",
                     )
                     .changed()
                 {
@@ -210,7 +216,7 @@ impl App {
     pub(super) fn more_details(&self, ui: &mut egui::Ui, s: &Server, tags: Option<&Tags>) {
         let row = |ui: &mut egui::Ui, k: &str, v: String| {
             ui.label(RichText::new(k).weak());
-            ui.label(v);
+            ui.add(egui::Label::new(v).wrap());
             ui.end_row();
         };
         if let Some(code) = &s.country {
@@ -226,6 +232,25 @@ impl App {
         if let Some(text) = time_speed(day, night) {
             row(ui, "Time speed", text);
         }
+    }
+
+    /// How many servers the likely-fakes filter hides that the other filters would show.
+    pub(super) fn fakes_hidden(&self) -> usize {
+        if self.state.filters.show_suspect {
+            return 0;
+        }
+        let flagged = self.screen.flags.iter().enumerate();
+        flagged
+            .filter(|(_, flag)| flag.is_some())
+            .filter_map(|(i, _)| self.servers.get(i))
+            .filter(|s| {
+                let seen = Seen {
+                    suspect: false,
+                    ..self.seen(s)
+                };
+                !self.keeps(&s.addr()) && self.state.filters.matches(s, &seen)
+            })
+            .count()
     }
 
     /// For a server that looks fake or like a second listing: why, and a way to the one shown

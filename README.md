@@ -19,7 +19,7 @@ open, the overlay runs in the background, ready for the game.
   after a restart.
 - Connects by address to servers the list doesn't have, and finds servers on your local network.
 - Notifies you when servers you pick have room: right-click any number of servers and choose
-  **Notify me when there's room**.
+  **Notify when there's room** to put them on your watch list.
 - Plays DayZ offline, on your own copy of Chernarus, Livonia, or Namalsk, with the Community
   Offline Mode missions.
 - Notes on servers, which the search looks in too.
@@ -45,7 +45,8 @@ you can write to:
 Everything comes in that one folder: the browser, the Workshop helper, the map overlay, and
 Valve's Steamworks library.
 
-To update, click **Update** in the top bar when it appears. The browser asks GitHub for the
+To update, click **Update** in the top bar when it appears; hovering it shows the new version and
+a link to what's new (also in Settings, under Updates). The browser asks GitHub for the
 latest release when it starts (and twice a day while it stays open). The update downloads the
 new release, checks it against the release's checksums, replaces the files in the folder, and
 restarts the browser and the overlay; your settings, favorites, and filters stay. Nothing is
@@ -61,6 +62,11 @@ By default the list comes from DZSA Launcher's public API, which most third-part
 use. It's cached for 5 minutes and refreshed when you ask (at most every 30 seconds). Servers DZSA
 marks as sponsors get no special place: the browser sorts the list itself.
 
+In a narrow window the Time, Country, Mods, and Queue columns make way, in that order (a queue then
+shows with the players, as `60/60 +5`), and the details panel gets narrower, so the server name,
+map, players, ping, and padlock always show. Escape closes the window in front (Join, Settings,
+and the others), except while it's waiting to join or downloading.
+
 With your own [Steam Web API key](https://steamcommunity.com/dev/apikey) (Settings), the list comes
 from Steam instead, in about ten requests (Steam returns at most about 10,000 servers per request).
 The key is kept in your system keyring (KWallet or GNOME Keyring, or Windows Credential Manager),
@@ -75,8 +81,8 @@ this way stay in the list (until removed) and are looked up again each time the 
 
 **Find servers on my network** (in the same window) asks every address in your computer's local
 network (its /24, such as `192.168.1.1` to `192.168.1.254`) on the usual query ports, 27016 and
-2303, plus one more port if you type it, and lists the DayZ servers that answer within two
-seconds. Joining one remembers it like a server typed in.
+2303, plus the **Extra query port** if you type one, and lists the DayZ servers that answer within
+two seconds. Joining one remembers it like a server typed in.
 
 ### Playing offline
 
@@ -102,13 +108,15 @@ like a server's mods.
 
 ### Notes and player history
 
-Right-click a server and pick **Add note…** (or **Add note** in the details panel) to write
-something down about it. A server with a note has a small note mark after its name in the list;
-hover it to read the note. Notes are saved with your favorites. Empty a note to remove it.
+Right-click a server and pick **Add note…** (or **Add note**, then **Edit note**, in the details
+panel) to write something down about it. A server with a note has a small note mark after its name
+in the list; hover it to read the note. Notes are saved with your favorites. Empty a note to remove
+it.
 
 Sites that keep player history want a paid key or have no API, so the browser keeps its own: while
 it's open, it asks your favorite, recent, and watched servers for their player count every 5 minutes (and
-keeps answers it gets anyway), for two weeks. The details panel charts the last 24 hours or 7 days.
+keeps answers it gets anyway), for two weeks. The details panel's **Player history** charts the
+last 24 hours or 7 days; for other servers it says to favorite or watch one to record it.
 When a server stops answering for a few minutes, or its in-game clock is set back, that counts as
 a restart (when it's the only server asked, it has to miss two checks in a row, so a blip in your
 own connection doesn't count); once those fall at the same times of day on several days, the panel says when it usually
@@ -131,8 +139,10 @@ restarts (in your local time). Nothing is recorded while the browser is closed.
   be right (more players than slots, over 127 slots, a queue over 255); and when the server's own
   answers keep saying far fewer players than the list (for 10 minutes after the last such
   answer, then it shows again to be asked again, since a restart empties a server for a while).
-  The details panel says why. Favorites, recent servers, watched servers, and servers added by
-  address always show.
+  The details panel says why, under the server's name. Favorites, recent servers, watched
+  servers, and servers added by address always show; a likely fake that shows has a ⚠ after its
+  name in the list (hover it for why). The status bar says how many are hidden, and clicking that
+  shows them.
 
 ### Game version
 
@@ -218,8 +228,9 @@ one leave it out entirely.
 
 ### Notifications
 
-Right-click a server and pick **Notify me when there's room** (or click **Notify** in its details)
-to put it on your watch list; the status bar's bell opens the list, with how each server stands.
+Right-click a server and pick **Notify when there's room** (or click **🔔 Notify** in its details)
+to put it on your watch list; such servers have a bell after their name, and the status bar's bell
+opens the list, with how each server stands.
 While the browser is open it asks each one about every 30 seconds, and sends a desktop
 notification when one goes from full, queued, or not answering to a free slot with no queue.
 A server that keeps getting and losing a slot isn't announced again until it has been without room

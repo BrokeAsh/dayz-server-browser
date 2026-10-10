@@ -369,11 +369,10 @@ impl App {
         let join = self.join.as_mut().unwrap();
         let id = egui::Id::new(WINDOW);
         if std::mem::take(&mut join.focus) {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+            super::windows::to_front(ctx, id);
         }
         let mut open = true;
-        egui::Window::new("Join server")
-            .id(id)
+        super::windows::placed(egui::Window::new("Join server"), ctx, id, 480.0)
             .collapsible(false)
             .resizable(true)
             .default_width(480.0)
@@ -414,14 +413,14 @@ impl App {
                     ui.label(RichText::new("DayZ is already running; close it first.").color(WARN));
                 }
                 if let Some(e) = &view.install_error {
-                    ui.label(RichText::new(e).color(ERROR));
+                    ui.label(RichText::new(super::sentence(e)).color(ERROR));
                 }
                 if view.outdated > 0 && view.missing == 0 && !join.downloading() {
                     ui.label(RichText::new("Some mods have updates; joining may fail until they're updated.").weak().small());
                 }
                 if let Some((message, error)) = &join.message {
                     let color = if *error { ERROR } else { ui.visuals().text_color() };
-                    ui.label(RichText::new(message).color(color));
+                    ui.label(RichText::new(super::sentence(message)).color(color));
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -436,6 +435,10 @@ impl App {
                     }
                 });
             });
+        // Not while it's waiting or downloading: closing stops that.
+        if super::windows::escape_closes(ctx, id) && !self.join.as_ref().is_some_and(Join::busy) {
+            open = false;
+        }
         if !open {
             action = Some(Action::Close);
         }
@@ -984,7 +987,7 @@ fn download_section(ui: &mut egui::Ui, view: &View, join: &Join, action: &mut Op
     }
     let Some(run) = &join.run else { return };
     if let Some(e) = &run.error {
-        ui.label(RichText::new(e).color(ERROR));
+        ui.label(RichText::new(super::sentence(e)).color(ERROR));
     } else if run.cancelled {
         ui.label(RichText::new("Download cancelled").weak());
     } else if !run.finished() && !run.connected {
@@ -1018,13 +1021,13 @@ fn wait_section(
     } else {
         match (view.full(), view.queue) {
             (true, Some(q)) => {
-                format!("The server is full, with {q} waiting: joining now puts you in its queue.")
+                format!("The server is full, with {q} in queue: joining now puts you in it.")
             }
             (true, None) => {
                 "The server is full: DayZ may queue you or turn you away to the main menu.".into()
             }
             (false, Some(q)) => {
-                format!("{q} waiting in the queue: joining now puts you behind them.")
+                format!("{q} in queue: joining now puts you behind them.")
             }
             (false, None) => String::new(),
         }
@@ -1070,7 +1073,17 @@ fn wait_section(
             *action = Some(Action::WaitForRoom);
         }
     });
-    if waiting {
+    if !waiting {
+        // The watch list does the same without launching.
+        ui.label(
+            RichText::new(
+                "To be told when there's room without starting DayZ, right-click the server in \
+                 the list and pick \"Notify when there's room\" (your watch list).",
+            )
+            .weak()
+            .small(),
+        );
+    } else {
         if join.using_list_mods(view) {
             let text = if view.states.is_empty() {
                 "The server hasn't sent its mod list; the server list says it needs none.".into()

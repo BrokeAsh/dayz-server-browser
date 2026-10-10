@@ -27,6 +27,7 @@ mod screening;
 mod settings;
 mod updates;
 mod watch;
+mod windows;
 
 use eframe::egui::{self, Align, Color32};
 use std::collections::{HashMap, HashSet};
@@ -1018,6 +1019,8 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let capturing = self.settings_window.as_ref().is_some_and(|w| w.capturing);
+        windows::begin_frame(&ctx, capturing);
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(4.0);
             self.top_bar(ui);
@@ -1032,11 +1035,7 @@ impl eframe::App for App {
                     .auto_shrink([false, true])
                     .show(ui, |ui| self.filters_panel(ui));
             });
-        egui::Panel::right("details")
-            .resizable(true)
-            .default_size(340.0)
-            .min_size(260.0)
-            .show(ui, |ui| self.details_panel(ui));
+        self.details_side_panel(ui);
         egui::CentralPanel::default().show(ui, |ui| {
             self.table_hovered = ui.rect_contains_pointer(ui.max_rect());
             if self.pending_resort
@@ -1072,7 +1071,9 @@ impl eframe::App for App {
             if at.elapsed() > Duration::from_secs(4) {
                 self.toast = None;
             } else {
+                // In front of the windows, and not one of them for Escape.
                 egui::Area::new(egui::Id::new("toast"))
+                    .order(egui::Order::Foreground)
                     .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -36.0])
                     .show(&ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(message));
@@ -1080,6 +1081,7 @@ impl eframe::App for App {
                 ctx.request_repaint_after(Duration::from_millis(500));
             }
         }
+        windows::end_frame(&ctx);
         // Keep "updated N minutes ago" and pings ticking.
         ctx.request_repaint_after(Duration::from_secs(5));
     }
@@ -1102,6 +1104,16 @@ fn state_badge(state: ModState) -> (&'static str, Color32, &'static str) {
     }
 }
 
+/// A message shown on its own, such as an error (which are written to go after a colon): with a
+/// capital first letter.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 pub fn open_workshop(id: u64) {
     let url = format!("steam://url/CommunityFilePage/{id}");
     if let Err(e) = open::that_detached(&url) {
@@ -1109,5 +1121,21 @@ pub fn open_workshop(id: u64) {
         let _ = open::that_detached(format!(
             "https://steamcommunity.com/sharedfiles/filedetails/?id={id}"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_start_with_a_capital() {
+        assert_eq!(
+            sentence("couldn't find notahost.invalid: failed to lookup"),
+            "Couldn't find notahost.invalid: failed to lookup"
+        );
+        assert_eq!(sentence("Already"), "Already");
+        assert_eq!(sentence("état"), "État");
+        assert_eq!(sentence(""), "");
     }
 }
