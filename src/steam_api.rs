@@ -190,6 +190,8 @@ pub fn test_key(key: &str) -> Result<()> {
 pub struct FileDetails {
     /// Unix time of the last update.
     pub time_updated: u64,
+    /// The item's name on the Workshop.
+    pub title: String,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +211,7 @@ struct DetailsItem {
     publishedfileid: String,
     result: i32,
     time_updated: u64,
+    title: String,
 }
 
 /// Details for Workshop items (no key needed). Items Steam doesn't return are left out.
@@ -235,6 +238,7 @@ pub fn file_details(ids: &[u64]) -> Result<HashMap<u64, FileDetails>> {
                 id,
                 FileDetails {
                     time_updated: item.time_updated,
+                    title: item.title,
                 },
             );
         }

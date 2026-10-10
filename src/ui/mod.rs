@@ -14,6 +14,7 @@ mod details;
 mod filters;
 mod join;
 mod list;
+mod mods_page;
 mod settings;
 mod updates;
 
@@ -75,6 +76,8 @@ pub enum Msg {
         result: Result<Found, String>,
         then: Then,
     },
+    /// For the Mods window.
+    Mods(mods_page::PageMsg),
 }
 
 /// What a server looked up by address is for.
@@ -183,6 +186,7 @@ pub struct App {
     toast: Option<(String, Instant)>,
     update: updates::UpdateStatus,
     last_update_check: Option<Instant>,
+    mods_page: Option<mods_page::ModsPage>,
 }
 
 impl App {
@@ -251,6 +255,7 @@ impl App {
             toast: None,
             update: updates::UpdateStatus::Idle,
             last_update_check: None,
+            mods_page: None,
             settings,
         };
         app.load_list(false);
@@ -548,6 +553,7 @@ impl App {
                         ..
                     } | workshop::Event::Exited
                 );
+                self.mods_workshop_event(run, &event);
                 if let Some(join) = &mut self.join {
                     join.workshop_event(run, event);
                 }
@@ -568,6 +574,7 @@ impl App {
             }
             Msg::Found { addr, result, then } => self.found(&addr, result, then),
             Msg::Update(msg) => self.update_msg(msg),
+            Msg::Mods(msg) => self.mods_msg(msg),
         }
     }
 
@@ -972,6 +979,7 @@ impl eframe::App for App {
         self.join_window(&ctx);
         self.connect_window(&ctx);
         self.settings_window(&ctx);
+        self.mods_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(4) {

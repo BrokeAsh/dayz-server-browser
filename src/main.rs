@@ -7,6 +7,7 @@ mod a2s;
 mod address;
 mod dzsa;
 mod http;
+mod inventory;
 mod launch;
 mod mods;
 mod overlay;

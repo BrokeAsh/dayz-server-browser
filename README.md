@@ -83,6 +83,15 @@ shows DayZ as running, so the helper exits as soon as the downloads finish. If i
 **Open Workshop pages** opens each mod's page in Steam to subscribe yourself; the join window
 notices when Steam has downloaded them.
 
+**Mods** in the top bar lists the Workshop mods Steam installed for your account, with their
+size, when each was last updated (and whether there's an update), and which of your favorite and
+recent servers use them. Search and sort them, open a mod's Workshop page or folder, or
+unsubscribe from mods, one at a time or all those no favorite or recent server uses. The helper
+does the unsubscribing; Steam deletes the files once it no longer counts DayZ as running, a
+moment after the helper quits. Folders Steam didn't install for your account (left behind, or
+another Steam account's) are listed apart, and can be deleted. Nothing is unsubscribed or deleted
+while DayZ runs.
+
 ### Launching
 
 - **Linux:** `steam -applaunch 221100 -nolauncher -connect=<ip>:<port>:<query port> -mod=...`.
