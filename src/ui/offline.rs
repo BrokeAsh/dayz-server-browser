@@ -658,14 +658,9 @@ fn waiting_section(ui: &mut egui::Ui, window: &Offline, action: &mut Option<Acti
     ui.add_space(4.0);
     ui.label(
         RichText::new(format!(
-            "An earlier update couldn't move the saves for {} back; until they are, {} a new \
-             game.",
+            "An earlier update couldn't move your saves for {} back into place; they're waiting \
+             in the folder below.",
             window.titles(&window.waiting),
-            if window.waiting.len() == 1 {
-                "that map starts"
-            } else {
-                "those maps start"
-            }
         ))
         .color(WARN),
     );
