@@ -16,6 +16,7 @@ mod lan;
 mod launch;
 mod mods;
 mod news;
+mod notify;
 mod offline;
 mod overlay;
 mod secret;
@@ -28,6 +29,7 @@ mod ui;
 mod update;
 mod vdf;
 mod version;
+mod watch;
 #[cfg(windows)]
 mod win;
 mod workshop;

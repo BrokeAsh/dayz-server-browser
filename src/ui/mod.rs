@@ -26,6 +26,7 @@ mod prejoin;
 mod screening;
 mod settings;
 mod updates;
+mod watch;
 
 use eframe::egui::{self, Align, Color32};
 use std::collections::{HashMap, HashSet};
@@ -99,6 +100,8 @@ pub enum Msg {
     Screen(screening::ScreenMsg),
     /// For the Mods window.
     Mods(mods_page::PageMsg),
+    /// From the notification watch list's checker.
+    Watch(crate::watch::Out),
 }
 
 /// What a server looked up by address is for.
@@ -217,6 +220,8 @@ pub struct App {
     /// Servers' countries, and the likely-fakes check.
     screen: screening::Screening,
     mods_page: Option<mods_page::ModsPage>,
+    /// The servers to notify about when they have room: their checker, statuses, and window.
+    watch_list: watch::WatchList,
 }
 
 impl App {
@@ -237,6 +242,7 @@ impl App {
         let settings = Settings::load();
         let install = steam::find(settings.game_dir.as_deref()).map_err(|e| format!("{e:#}"));
         let local = install.as_ref().map(LocalMods::load).unwrap_or_default();
+        let watch_list = watch::WatchList::start(&ctx, &tx, settings.notify_sound);
         let mut app = Self {
             ctx,
             tx,
@@ -294,6 +300,7 @@ impl App {
             discord: discord::DiscordStatus::default(),
             note_draft: None,
             history,
+            watch_list,
         };
         app.start_screening();
         app.load_list(false);
@@ -309,6 +316,7 @@ impl App {
         for addr in app.state.added.clone() {
             app.look_up(addr, Then::Keep);
         }
+        app.resume_watching();
         app
     }
 
@@ -631,6 +639,7 @@ impl App {
             }
             Msg::Screen(msg) => self.screen_msg(msg),
             Msg::Mods(msg) => self.mods_msg(msg),
+            Msg::Watch(out) => self.watch_msg(out),
         }
     }
 
@@ -1051,6 +1060,7 @@ impl eframe::App for App {
         self.news_window(&ctx);
         self.offline_window(&ctx);
         self.mods_window(&ctx);
+        self.watch_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(4) {

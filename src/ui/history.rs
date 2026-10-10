@@ -63,11 +63,12 @@ impl Shown {
 }
 
 impl App {
-    /// The servers whose players are recorded: favorites, then recent ones.
+    /// The servers whose players are recorded: favorites, then recent and watched ones.
     pub(super) fn history_targets(&self) -> Vec<String> {
         let mut targets: Vec<String> = Vec::new();
         let recent = self.state.recent.iter().map(|r| &r.addr);
-        for addr in self.state.favorites.iter().chain(recent) {
+        let watched = self.state.watched.iter().map(|w| &w.addr);
+        for addr in self.state.favorites.iter().chain(recent).chain(watched) {
             if !targets.contains(addr) {
                 targets.push(addr.clone());
             }

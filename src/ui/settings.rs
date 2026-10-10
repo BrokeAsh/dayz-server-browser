@@ -126,6 +126,8 @@ impl App {
         ui.separator();
         self.updates_section(ui, window);
         self.discord_section(ui);
+        ui.separator();
+        self.notifications_section(ui);
         if !self.state.added.is_empty() {
             ui.separator();
             self.added_section(ui);

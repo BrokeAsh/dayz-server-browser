@@ -97,7 +97,8 @@ pub fn query(addr: &str) -> Result<Found> {
     Ok(found(target.ip(), target.port(), info, took))
 }
 
-pub(crate) fn found(ip: IpAddr, query_port: u16, info: Info, took: Duration) -> Found {
+/// The server a query address answered for, as the list shows servers.
+pub fn found(ip: IpAddr, query_port: u16, info: Info, took: Duration) -> Found {
     let tags = a2s::parse_tags(&info.keywords);
     let server = Server {
         name: info.name.clone(),

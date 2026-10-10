@@ -55,6 +55,8 @@ pub struct Settings {
     pub empty_world: bool,
     /// `-cpuCount=`, when set.
     pub cpu_count: Option<u32>,
+    /// Desktop notifications from the watch list play a sound.
+    pub notify_sound: bool,
 }
 
 impl Default for Settings {
@@ -72,6 +74,7 @@ impl Default for Settings {
             windowed: false,
             empty_world: false,
             cpu_count: None,
+            notify_sound: true,
         }
     }
 }
@@ -128,6 +131,19 @@ pub struct State {
     /// The user's notes on servers, by `ip:query_port`.
     #[serde(deserialize_with = "notes")]
     pub notes: BTreeMap<String, String>,
+    /// Servers to notify about when they have room, in the order they were added.
+    pub watched: Vec<Watched>,
+}
+
+/// A server on the notification watch list. Its name and map are kept so it can be shown while
+/// it isn't in the list (dropped by a refresh, or added by address) or isn't answering.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Watched {
+    /// `ip:query_port`.
+    pub addr: String,
+    pub name: String,
+    pub map: String,
 }
 
 pub const COLUMNS: [f32; 7] = [100.0, 64.0, 48.0, 48.0, 44.0, 44.0, 56.0];
@@ -167,6 +183,7 @@ impl Default for State {
             added: Vec::new(),
             news_seen: 0,
             notes: BTreeMap::new(),
+            watched: Vec::new(),
         }
     }
 }
@@ -234,6 +251,10 @@ impl State {
         self.recent.retain(|r| r.addr != recent.addr);
         self.recent.insert(0, recent);
         self.recent.truncate(20);
+    }
+
+    pub fn is_watched(&self, addr: &str) -> bool {
+        self.watched.iter().any(|w| w.addr == addr)
     }
 }
 
@@ -415,5 +436,33 @@ mod tests {
         let state: State = serde_json::from_str(r#"{"notes":"oops","favorites":["a"]}"#).unwrap();
         assert!(state.notes.is_empty());
         assert_eq!(state.favorites, ["a"]);
+    }
+
+    #[test]
+    fn reads_state_from_before_the_watch_list() {
+        let mut state: State = serde_json::from_str(r#"{"favorites":["1.2.3.4:2303"]}"#).unwrap();
+        assert!(state.watched.is_empty());
+        state.watched.push(Watched {
+            addr: "1.2.3.4:2303".into(),
+            name: "Some server".into(),
+            map: "chernarusplus".into(),
+        });
+        let saved = serde_json::to_string(&state).unwrap();
+        let loaded: State = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.watched, state.watched);
+        assert!(loaded.is_watched("1.2.3.4:2303"));
+        assert!(!loaded.is_watched("1.2.3.4:2302"));
+        // An entry without its name still loads.
+        let state: State =
+            serde_json::from_str(r#"{"watched":[{"addr":"1.2.3.4:2303"}]}"#).unwrap();
+        assert_eq!(state.watched[0].addr, "1.2.3.4:2303");
+        assert_eq!(state.watched[0].name, "");
+    }
+
+    #[test]
+    fn reads_settings_from_before_notifications() {
+        let settings: Settings = toml::from_str("overlay = false\n").unwrap();
+        assert!(settings.notify_sound);
+        assert!(!settings.overlay);
     }
 }

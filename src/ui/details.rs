@@ -78,6 +78,7 @@ impl App {
                 self.toggle_favorite(&addr);
             }
             self.note_button(ui, &addr);
+            self.watch_toggle(ui, &addr);
         });
         if self.state.added.contains(&addr) && self.only_added(&addr) {
             ui.horizontal(|ui| {

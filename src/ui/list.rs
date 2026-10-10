@@ -131,6 +131,10 @@ impl App {
                         }
                     });
                     row.col(|ui| {
+                        if state.is_watched(&addr) {
+                            ui.label(RichText::new("🔔").small().weak())
+                                .on_hover_text("You'll be notified when it has room");
+                        }
                         if seen.note.is_empty() {
                             ui.label(&s.name);
                         } else {
@@ -282,6 +286,15 @@ impl App {
         };
         if ui.button(note).clicked() {
             self.edit_note(addr);
+            ui.close();
+        }
+        let watch = if self.state.is_watched(addr) {
+            "Stop notifying"
+        } else {
+            "Notify me when there's room"
+        };
+        if ui.button(watch).clicked() {
+            self.toggle_watch(addr);
             ui.close();
         }
     }

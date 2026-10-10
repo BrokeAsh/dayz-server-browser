@@ -228,11 +228,12 @@ impl App {
     }
 
     /// The user's own servers, which the likely-fakes filter never hides: favorites, recent
-    /// ones, and servers added by address.
+    /// ones, servers added by address, and watched ones.
     pub(super) fn keeps(&self, addr: &str) -> bool {
         self.state.is_favorite(addr)
             || self.state.recent.iter().any(|r| r.addr == addr)
             || self.state.added.iter().any(|a| a == addr)
+            || self.state.is_watched(addr)
     }
 
     /// Whether the likely-fakes filter hides a server.

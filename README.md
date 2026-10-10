@@ -18,10 +18,12 @@ open, the overlay runs in the background, ready for the game.
   queued server, it can wait and join as soon as there's a free slot and no queue, such as right
   after a restart.
 - Connects by address to servers the list doesn't have, and finds servers on your local network.
+- Notifies you when servers you pick have room: right-click any number of servers and choose
+  **Notify me when there's room**.
 - Plays DayZ offline, on your own copy of Chernarus, Livonia, or Namalsk, with the Community
   Offline Mode missions.
 - Notes on servers, which the search looks in too.
-- Records how many play on your favorite and recent servers while it's open, charts the last day
+- Records how many play on your favorite, recent, and watched servers while it's open, charts the last day
   or week, and tells when a server usually restarts.
 - Optional: use Steam's own server list with your Steam Web API key instead of DZSA's.
 - Shows the DayZ developers' latest news from Steam, with a count of new posts on the News
@@ -103,7 +105,7 @@ something down about it. A server with a note has a small note mark after its na
 hover it to read the note. Notes are saved with your favorites. Empty a note to remove it.
 
 Sites that keep player history want a paid key or have no API, so the browser keeps its own: while
-it's open, it asks your favorite and recent servers for their player count every 5 minutes (and
+it's open, it asks your favorite, recent, and watched servers for their player count every 5 minutes (and
 keeps answers it gets anyway), for two weeks. The details panel charts the last 24 hours or 7 days.
 When a server stops answering for a few minutes, or its in-game clock is set back, that counts as
 a restart; once those fall at the same times of day on several days, the panel says when it usually
@@ -123,7 +125,7 @@ restarts (in your local time). Nothing is recorded while the browser is closed.
   stays; default host names like "nitrado.net gameserver" don't count); when its numbers can't
   be right (more players than slots, over 127 slots, a queue over 255); and when the server's own
   answers keep saying far fewer players than the list. The details panel says why. Favorites,
-  recent servers, and servers added by address always show.
+  recent servers, watched servers, and servers added by address always show.
 
 ### Game version
 
@@ -202,6 +204,25 @@ feature needs the browser's own Discord application id (`DISCORD_APP_ID` in `src
 from the [Discord developer portal](https://discord.com/developers/applications)); builds without
 one leave it out entirely.
 
+### Notifications
+
+Right-click a server and pick **Notify me when there's room** (or click **Notify** in its details)
+to put it on your watch list; the status bar's bell opens the list, with how each server stands.
+While the browser is open it asks each one about every 30 seconds, and sends a desktop
+notification when one goes from full, queued, or not answering to a free slot with no queue.
+A server that keeps getting and losing a slot isn't announced again until it has been without room
+for two minutes. This is separate from the join window's **Join when there's room**, which joins by
+itself.
+
+- **Linux:** through your desktop's notification service. Clicking the notification or its
+  **Join** button brings the browser forward with the join window open.
+- **Windows:** a toast, for information only. Windows names the sender of a toast after the
+  program's Start menu entry, which the unpacked browser doesn't have, so it shows as Windows
+  PowerShell, and clicking it doesn't bring up the browser.
+
+If no notification can be shown, the browser says it in its own window instead. Settings has
+**Play a sound** and **Send a test notification**.
+
 ### The map overlay
 
 The overlay ships with the browser: its repository is included here as a git submodule
@@ -240,7 +261,7 @@ release downloads include it. Valve's library isn't part of this repository.
 ## Settings and files
 
 - Settings: `~/.config/dayz-browser/config.toml` (Windows: `%APPDATA%\dayz-browser\config`).
-- Favorites, recent servers, filters, the cached list, and the country database:
+- Favorites, recent servers, the watch list, filters, the cached list, and the country database:
   `~/.local/share/dayz-browser/` (Windows: `%APPDATA%\dayz-browser\data`). Offline Mode and its
   saves are in `offline/` there.
 - Notes are in `state.json` there, and player history in its `history` folder (a small file per
