@@ -1,11 +1,13 @@
-//! The notification watch list: "Notify me when there's room" in a server's right-click menu and
-//! its details, the status bar's button with the count, the small window listing the watched
-//! servers and how each stands, the Notifications settings, and what clicking a notification
-//! does. The checking and the notifying are in `crate::watch`.
+//! The notification watch list: "Notify when there's room" in a server's right-click menu and
+//! Notify in its details, the status bar's button with the count, the small window listing the
+//! watched servers and how each stands, the Notifications settings, and what clicking a
+//! notification does. The checking and the notifying are in `crate::watch`.
 
 use eframe::egui::{self, Align, Color32, Layout, RichText};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -27,6 +29,8 @@ pub struct WatchList {
     window: bool,
     /// When the toast showing was put up for notifications that couldn't be shown.
     not_shown: Option<Instant>,
+    /// A test notification is being sent (it can take a while with no notification service).
+    testing: Arc<AtomicBool>,
 }
 
 impl WatchList {
@@ -41,6 +45,7 @@ impl WatchList {
             status: HashMap::new(),
             window: false,
             not_shown: None,
+            testing: Arc::default(),
         }
     }
 }
@@ -181,13 +186,19 @@ impl App {
     /// The Notify toggle in the details panel.
     pub(super) fn watch_toggle(&mut self, ui: &mut egui::Ui, addr: &str) {
         let watched = self.state.is_watched(addr);
-        let hint = if watched {
-            "You'll be notified when it has room. Click to stop."
+        let (label, hint) = if watched {
+            (
+                "🔔 Notifying",
+                "On your watch list: you'll be notified when it has room. Click to stop.",
+            )
         } else {
-            "Notify me when there's room"
+            (
+                "🔔 Notify",
+                "Put it on your watch list, to be notified when there's room",
+            )
         };
         if ui
-            .selectable_label(watched, "🔔 Notify")
+            .selectable_label(watched, label)
             .on_hover_text(hint)
             .clicked()
         {
@@ -216,7 +227,7 @@ impl App {
         ui.separator();
         if ui
             .selectable_label(self.watch_list.window, text)
-            .on_hover_text("Servers you'll be notified about when they have room")
+            .on_hover_text("Your watch list: servers you'll be notified about when they have room")
             .clicked()
         {
             self.watch_list.window = !self.watch_list.window;
@@ -236,9 +247,10 @@ impl App {
         let mut remove = None;
         let mut pick = None;
         let mut join = None;
+        let id = egui::Id::new(WINDOW);
         let corner = ctx.content_rect().right_bottom() - egui::vec2(12.0, 36.0);
-        egui::Window::new("Notify me")
-            .id(egui::Id::new(WINDOW))
+        egui::Window::new("Watch list")
+            .id(id)
             .collapsible(false)
             .resizable(false)
             .default_width(300.0)
@@ -249,7 +261,7 @@ impl App {
                 if self.state.watched.is_empty() {
                     ui.label(
                         RichText::new(
-                            "Right-click a server in the list and pick \"Notify me when there's \
+                            "Right-click a server in the list and pick \"Notify when there's \
                              room\".",
                         )
                         .weak(),
@@ -330,6 +342,9 @@ impl App {
                     .weak(),
                 );
             });
+        if super::windows::escape_closes(ctx, id) {
+            open = false;
+        }
         if let Some(addr) = remove {
             self.toggle_watch(&addr);
         }
@@ -357,8 +372,8 @@ impl App {
         ui.heading("Notifications");
         ui.label(
             RichText::new(
-                "Right-click a server and pick \"Notify me when there's room\" to get a desktop \
-                 notification when it has a free slot and no queue.",
+                "Right-click a server and pick \"Notify when there's room\" to put it on your \
+                 watch list: you get a desktop notification when it has a free slot and no queue.",
             )
             .weak()
             .small(),
@@ -372,15 +387,26 @@ impl App {
                     .watcher
                     .set_sound(self.settings.notify_sound);
             }
-            if ui.button("Send a test notification").clicked() {
+            // One at a time: with no notification service, it takes a while to fail.
+            let testing = self.watch_list.testing.load(Ordering::Relaxed);
+            let label = if testing {
+                "Sending…"
+            } else {
+                "Send a test notification"
+            };
+            if ui.add_enabled(!testing, egui::Button::new(label)).clicked() {
                 let sound = self.settings.notify_sound;
+                let testing = self.watch_list.testing.clone();
+                testing.store(true, Ordering::Relaxed);
                 self.spawn(move || {
-                    match notify::show(
+                    let shown = notify::show(
                         "Test notification",
                         "Servers on your watch list are announced like this when they have room.",
                         sound,
                         None,
-                    ) {
+                    );
+                    testing.store(false, Ordering::Relaxed);
+                    match shown {
                         Ok(()) => Msg::Toast("Sent a test notification".into()),
                         Err(e) => {
                             log::warn!("couldn't show a notification: {e:#}");
@@ -428,7 +454,7 @@ fn describe(status: Option<Status>) -> (String, Option<Color32>) {
             players,
             slots,
             queue,
-        }) => (format!("{players}/{slots}, {queue} queued"), None),
+        }) => (format!("{players}/{slots}, {queue} in queue"), None),
         Some(Status::Silent) => ("not answering".into(), Some(WARN)),
     }
 }
@@ -464,7 +490,7 @@ mod tests {
                 queue: 3
             }))
             .0,
-            "60/60, 3 queued"
+            "60/60, 3 in queue"
         );
         assert_eq!(
             describe(Some(Status::NoRoom {

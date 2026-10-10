@@ -308,7 +308,8 @@ impl App {
 
         let mut action = None;
         let mut open = true;
-        egui::Window::new("Play offline")
+        let id = egui::Id::new("offline-window");
+        super::windows::placed(egui::Window::new("Play offline"), ctx, id, 440.0)
             .collapsible(false)
             .resizable(false)
             .default_width(440.0)
@@ -336,10 +337,10 @@ impl App {
                     ui.label(RichText::new("DayZ is already running; close it first.").color(WARN));
                 }
                 if let Some(e) = &install_error {
-                    ui.label(RichText::new(e).color(ERROR));
+                    ui.label(RichText::new(super::sentence(e)).color(ERROR));
                 }
                 if let Some(e) = &window.error {
-                    ui.label(RichText::new(e).color(ERROR));
+                    ui.label(RichText::new(super::sentence(e)).color(ERROR));
                 }
                 if !window.missions.is_empty() {
                     ui.add_space(4.0);
@@ -369,6 +370,11 @@ impl App {
                     action = Some(Action::Close);
                 }
             });
+        // Not while it's downloading or setting up: closing stops that.
+        let busy = self.offline.busy() || self.offline.run.as_ref().is_some_and(ModRun::running);
+        if super::windows::escape_closes(ctx, id) && !busy {
+            open = false;
+        }
         if !open {
             action = Some(Action::Close);
         }
@@ -729,7 +735,7 @@ fn mods_row(
     if let Some(e) = window.run.as_ref().and_then(|r| r.error.as_ref()) {
         ui.end_row();
         ui.label("");
-        ui.label(RichText::new(e).color(ERROR));
+        ui.label(RichText::new(super::sentence(e)).color(ERROR));
     }
 }
 

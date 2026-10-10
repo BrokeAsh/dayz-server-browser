@@ -4,7 +4,7 @@
 use eframe::egui::{self, RichText};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{App, Msg};
+use super::{App, Msg, windows};
 use crate::news::{self, Item};
 
 /// Ask Steam for the news again after this long...
@@ -79,7 +79,7 @@ impl App {
     pub(super) fn news_button(&mut self, ui: &mut egui::Ui) {
         let new = news::unseen(&self.news.items, self.state.news_seen, now());
         let button = if new > 0 {
-            let badge = RichText::new(format!("● {new}"))
+            let badge = RichText::new(format!("{new} new"))
                 .small()
                 .color(ui.visuals().hyperlink_color);
             egui::Button::new(("News", badge))
@@ -108,7 +108,8 @@ impl App {
         let mut open = true;
         let mut retry = false;
         let mut follow = None;
-        egui::Window::new("DayZ news")
+        let id = egui::Id::new("news-window");
+        windows::placed(egui::Window::new("DayZ news"), ctx, id, 460.0)
             .collapsible(false)
             .resizable(true)
             .default_width(460.0)
@@ -131,7 +132,8 @@ impl App {
                         } else {
                             "Couldn't check for newer posts."
                         };
-                        ui.label(RichText::new(text).weak()).on_hover_text(e);
+                        ui.label(RichText::new(text).weak())
+                            .on_hover_text(super::sentence(e));
                         retry = ui
                             .add_enabled(!self.news.loading, egui::Button::new("Try again"))
                             .clicked();
@@ -175,6 +177,9 @@ impl App {
                     follow = Some(news::all_news_page());
                 }
             });
+        if windows::escape_closes(ctx, id) {
+            open = false;
+        }
         if let Some(url) = follow
             && let Err(e) = open::that_detached(&url)
         {

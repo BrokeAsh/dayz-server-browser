@@ -4,31 +4,23 @@
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use super::{App, ERROR, FAIR, GOOD, Live, PING_AGAIN};
+use super::{App, ERROR, FAIR, GOOD, Live, PING_AGAIN, WARN};
 use crate::geo;
 use crate::server::{SortBy, map_title};
 use crate::settings::COLUMNS;
 
 impl App {
     pub(super) fn table(&mut self, ui: &mut egui::Ui) {
+        // A re-sort or re-filter mustn't carry the selected server off screen: if it was on
+        // screen, the list scrolls just enough to keep it there, and not at all while it's still
+        // in view.
+        let mut keep_in_view = false;
         if self.view_dirty {
-            // A re-sort or re-filter mustn't carry the selected server off screen: if it was on
-            // screen, keep it there at about the same height.
-            let keep = self.selected.as_ref().and_then(|selected| {
-                let at = self.on_screen.iter().position(|a| a == selected)?;
-                let height = at as f32 / self.on_screen.len().max(1) as f32;
-                Some(if height < 0.33 {
-                    Align::Min
-                } else if height > 0.66 {
-                    Align::Max
-                } else {
-                    Align::Center
-                })
-            });
+            keep_in_view = self
+                .selected
+                .as_ref()
+                .is_some_and(|selected| self.on_screen.contains(selected));
             self.rebuild_view();
-            if keep.is_some() {
-                self.scroll_to_selected = keep;
-            }
         }
         let row_height = 22.0;
         let mut clicked: Option<(String, bool)> = None;
@@ -37,32 +29,36 @@ impl App {
         let mut visible: Vec<String> = Vec::new();
         // Each row on screen, for its right-click menu.
         let mut menus: Vec<(String, egui::Response)> = Vec::new();
-        let scroll_row = self.scroll_to_selected.take().and_then(|align| {
-            let selected = self.selected.as_ref()?;
-            let row = self
-                .view
-                .iter()
-                .position(|&i| self.servers[i].addr() == *selected)?;
-            Some((row, align))
-        });
+        let align = self.scroll_to_selected.take();
+        let scroll_row = (align.is_some() || keep_in_view)
+            .then(|| {
+                let selected = self.selected.as_ref()?;
+                self.view
+                    .iter()
+                    .position(|&i| self.servers[i].addr() == *selected)
+            })
+            .flatten();
 
-        // The server name takes whatever room the other columns leave, so the table fits unless
-        // the window is narrower than the columns' minimums.
-        let columns = self.state.columns;
+        // The server name takes whatever room the other columns leave. In a narrow window the
+        // optional columns make way, so the main ones always fit.
+        let spacing = ui.spacing().item_spacing.x;
+        let shown = shown_columns(&self.state.columns, ui.available_width(), spacing);
         let mut builder = TableBuilder::new(ui)
             .striped(true)
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::exact(22.0))
+            .column(Column::exact(STAR_WIDTH))
             .column(Column::remainder().at_least(NAME_MIN).clip(true));
-        for width in columns {
+        for &c in &shown {
+            let width = column_width(&self.state.columns, c, &shown);
             builder = builder.column(Column::exact(width).clip(true));
         }
         builder = builder.column(Column::exact(LOCK_WIDTH));
-        if let Some((row, align)) = scroll_row {
-            builder = builder.scroll_to_row(row, Some(align));
+        if let Some(row) = scroll_row {
+            builder = builder.scroll_to_row(row, align);
         }
         let state = &self.state;
+        let queue_column = shown.contains(&QUEUE);
         // Where each header cell is, for the column dividers drawn after the table.
         let mut cells: Vec<egui::Rect> = Vec::new();
         builder
@@ -70,20 +66,20 @@ impl App {
                 let mut head = |header: &mut egui_extras::TableRow, label: &str, by: SortBy| {
                     header.col(|ui| {
                         cells.push(ui.max_rect());
-                        let arrow = if state.sort == by {
-                            if state.sort_descending {
-                                " ⏷"
-                            } else {
-                                " ⏶"
-                            }
-                        } else {
-                            ""
+                        let sorted = state.sort == by;
+                        // The star's column has no room for an arrow: the star turns gold.
+                        let star = by == SortBy::Favorite;
+                        let arrow = match (sorted && !star, state.sort_descending) {
+                            (false, _) => "",
+                            (true, true) => " ⏷",
+                            (true, false) => " ⏶",
                         };
+                        let mut text = RichText::new(format!("{label}{arrow}")).strong();
+                        if sorted && star {
+                            text = text.color(Color32::GOLD);
+                        }
                         if ui
-                            .add(
-                                egui::Label::new(RichText::new(format!("{label}{arrow}")).strong())
-                                    .sense(Sense::click()),
-                            )
+                            .add(egui::Label::new(text).sense(Sense::click()))
                             .clicked()
                         {
                             sort_clicked = Some(by);
@@ -92,13 +88,10 @@ impl App {
                 };
                 head(&mut header, "★", SortBy::Favorite);
                 head(&mut header, "Server", SortBy::Name);
-                head(&mut header, "Map", SortBy::Map);
-                head(&mut header, "Players", SortBy::Players);
-                head(&mut header, "Queue", SortBy::Queue);
-                head(&mut header, "Time", SortBy::Time);
-                head(&mut header, "Ping", SortBy::Ping);
-                head(&mut header, "Mods", SortBy::Mods);
-                head(&mut header, "Country", SortBy::Country);
+                for &c in &shown {
+                    let (label, by) = HEADINGS[c];
+                    head(&mut header, label, by);
+                }
                 header.col(|ui| {
                     let color = ui.visuals().strong_text_color();
                     padlock(ui, color).on_hover_text("Needs a password");
@@ -131,68 +124,80 @@ impl App {
                         }
                     });
                     row.col(|ui| {
-                        if state.is_watched(&addr) {
-                            ui.label(RichText::new("🔔").small().weak())
-                                .on_hover_text("You'll be notified when it has room");
-                        }
-                        if seen.note.is_empty() {
-                            ui.label(&s.name);
-                        } else {
-                            super::notes::noted_name(ui, &s.name, &seen.note);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(map_title(&s.map));
-                    });
-                    row.col(|ui| {
-                        let (players, max) = seen.players.unwrap_or((s.players, s.max_players));
-                        ui.label(format!("{players}/{max}"));
-                    });
-                    row.col(|ui| {
-                        if let Some(queue) = seen.queue.or(s.queue).filter(|q| *q > 0) {
-                            ui.label(queue.to_string());
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            seen.time
-                                .as_ref()
-                                .or(s.time.as_ref())
-                                .map_or("", |t| t.as_str()),
-                        );
-                    });
-                    row.col(|ui| match live {
-                        Some(Live { ping: Some(p), .. }) => {
-                            ui.label(RichText::new(format!("{p}")).color(ping_color(*p)));
-                        }
-                        Some(Live {
-                            at: Some(_),
-                            ping: None,
-                            ..
-                        }) => {
-                            ui.label(RichText::new("—").weak())
-                                .on_hover_text("no answer");
-                        }
-                        _ => {
-                            ui.label(RichText::new("…").weak());
-                        }
-                    });
-                    row.col(|ui| {
-                        let text = if !s.mods.is_empty() {
-                            s.mods.len().to_string()
-                        } else if s.modded {
-                            "yes".into()
-                        } else {
-                            String::new()
+                        let marks = Marks {
+                            note: &seen.note,
+                            watched: state.is_watched(&addr),
+                            suspect: self.suspect(&addr).map(|x| x.explain(&self.servers)),
                         };
-                        ui.label(text);
+                        marked_name(ui, &s.name, &marks);
                     });
-                    row.col(|ui| {
-                        if let Some(code) = &s.country {
-                            ui.label(code)
-                                .on_hover_text(geo::name(code).unwrap_or(code));
-                        }
-                    });
+                    let queue = seen.queue.or(s.queue).filter(|q| *q > 0);
+                    for &c in &shown {
+                        row.col(|ui| match c {
+                            MAP => {
+                                ui.label(map_title(&s.map));
+                            }
+                            PLAYERS => {
+                                let (players, max) =
+                                    seen.players.unwrap_or((s.players, s.max_players));
+                                match queue.filter(|_| !queue_column) {
+                                    // With no room for the Queue column, it's here.
+                                    Some(q) => {
+                                        ui.label(format!("{players}/{max} +{q}"))
+                                            .on_hover_text(format!("{q} in queue"));
+                                    }
+                                    None => {
+                                        ui.label(format!("{players}/{max}"));
+                                    }
+                                }
+                            }
+                            QUEUE => {
+                                if let Some(queue) = queue {
+                                    ui.label(queue.to_string());
+                                }
+                            }
+                            TIME => {
+                                ui.label(
+                                    seen.time
+                                        .as_ref()
+                                        .or(s.time.as_ref())
+                                        .map_or("", |t| t.as_str()),
+                                );
+                            }
+                            PING => match live {
+                                Some(Live { ping: Some(p), .. }) => {
+                                    ui.label(RichText::new(format!("{p}")).color(ping_color(*p)));
+                                }
+                                Some(Live {
+                                    at: Some(_),
+                                    ping: None,
+                                    ..
+                                }) => {
+                                    ui.label(RichText::new("—").weak())
+                                        .on_hover_text("No answer");
+                                }
+                                _ => {
+                                    ui.label(RichText::new("…").weak());
+                                }
+                            },
+                            MODS => {
+                                let text = if !s.mods.is_empty() {
+                                    s.mods.len().to_string()
+                                } else if s.modded {
+                                    "yes".into()
+                                } else {
+                                    String::new()
+                                };
+                                ui.label(text);
+                            }
+                            _ => {
+                                if let Some(code) = &s.country {
+                                    ui.label(code)
+                                        .on_hover_text(geo::name(code).unwrap_or(code));
+                                }
+                            }
+                        });
+                    }
                     row.col(|ui| {
                         if s.password || seen.locked {
                             let color = ui.visuals().text_color();
@@ -209,7 +214,7 @@ impl App {
                 });
             });
 
-        self.column_dividers(ui, &cells);
+        self.column_dividers(ui, &cells, &shown);
 
         // Ping what's on screen (not too often).
         for addr in visible.iter().cloned() {
@@ -255,6 +260,16 @@ impl App {
         }
     }
 
+    /// The narrowest the list can be and still show its main columns (the star, the server name,
+    /// the map, players, ping, and the padlock), with the central panel's margins.
+    pub(super) fn table_min_width(&self, spacing: f32) -> f32 {
+        let main: f32 = MAIN
+            .iter()
+            .map(|&c| column_width(&self.state.columns, c, &MAIN))
+            .sum();
+        STAR_WIDTH + NAME_MIN + main + LOCK_WIDTH + spacing * (MAIN.len() + 2) as f32 + 24.0
+    }
+
     /// The right-click menu on a server's row. Each item does its thing and closes the menu.
     fn row_menu(&mut self, ui: &mut egui::Ui, addr: &str) {
         if ui.button("Join…").clicked() {
@@ -291,7 +306,7 @@ impl App {
         let watch = if self.state.is_watched(addr) {
             "Stop notifying"
         } else {
-            "Notify me when there's room"
+            "Notify when there's room"
         };
         if ui.button(watch).clicked() {
             self.toggle_watch(addr);
@@ -302,9 +317,9 @@ impl App {
     /// Draggable dividers in the list's header. Dragging the one after a column resizes it, and
     /// the server name gives or takes the room; the one between the server name and the map moves
     /// the map's left edge. Double-clicking one puts that column back to its first width.
-    fn column_dividers(&mut self, ui: &mut egui::Ui, cells: &[egui::Rect]) {
-        // Header cells: star, server name, then the sized columns.
-        let (Some(name), true) = (cells.get(1), cells.len() == 2 + COLUMNS.len()) else {
+    fn column_dividers(&mut self, ui: &mut egui::Ui, cells: &[egui::Rect], shown: &[usize]) {
+        // Header cells: star, server name, then the sized columns that show.
+        let (Some(name), true) = (cells.get(1), cells.len() == 2 + shown.len()) else {
             return;
         };
         let slack = name.width() - NAME_MIN;
@@ -325,8 +340,13 @@ impl App {
                 ui.visuals().widgets.noninteractive.bg_stroke
             };
             ui.painter().vline(x, cell.y_range().shrink(3.0), stroke);
-            // The divider after the server name belongs to the map, on its left.
-            let (column, sign) = if i == 1 { (0, -1.0) } else { (i - 2, 1.0) };
+            // The divider after the server name belongs to the map (always shown, and first),
+            // on its left.
+            let (column, sign) = if i == 1 {
+                (MAP, -1.0)
+            } else {
+                (shown[i - 2], 1.0)
+            };
             let width = &mut self.state.columns[column];
             if response.double_clicked() {
                 *width = COLUMNS[column];
@@ -380,12 +400,188 @@ fn padlock(ui: &mut egui::Ui, color: Color32) -> egui::Response {
 /// Narrowest the server name and the other list columns get.
 const NAME_MIN: f32 = 120.0;
 const COLUMN_MIN: f32 = 30.0;
+const STAR_WIDTH: f32 = 22.0;
 const LOCK_WIDTH: f32 = 20.0;
+
+/// The sized columns, as indexes into `COLUMNS` and the saved widths.
+const MAP: usize = 0;
+const PLAYERS: usize = 1;
+const QUEUE: usize = 2;
+const TIME: usize = 3;
+const PING: usize = 4;
+const MODS: usize = 5;
+const COUNTRY: usize = 6;
+/// Their headings, and what clicking one sorts by.
+const HEADINGS: [(&str, SortBy); COLUMNS.len()] = [
+    ("Map", SortBy::Map),
+    ("Players", SortBy::Players),
+    ("Queue", SortBy::Queue),
+    ("Time", SortBy::Time),
+    ("Ping", SortBy::Ping),
+    ("Mods", SortBy::Mods),
+    ("Country", SortBy::Country),
+];
+/// The columns that always show.
+const MAIN: [usize; 3] = [MAP, PLAYERS, PING];
+/// The others, in the order they make way when the list is too narrow for all of them. A queue
+/// then shows with the players.
+const OPTIONAL: [usize; 4] = [TIME, COUNTRY, MODS, QUEUE];
+
+/// The sized columns that fit in a list `room` wide, in order: all of them if they fit with the
+/// star, the server name at its narrowest, and the padlock, otherwise without the optional ones
+/// that don't.
+fn shown_columns(widths: &[f32; COLUMNS.len()], room: f32, spacing: f32) -> Vec<usize> {
+    let mut shown: Vec<usize> = (0..COLUMNS.len()).collect();
+    let needs = |shown: &[usize]| {
+        let columns: f32 = shown.iter().map(|&c| column_width(widths, c, shown)).sum();
+        STAR_WIDTH + NAME_MIN + columns + LOCK_WIDTH + spacing * (shown.len() + 2) as f32
+    };
+    for drop in OPTIONAL {
+        if needs(&shown) <= room {
+            break;
+        }
+        shown.retain(|&c| c != drop);
+    }
+    shown
+}
+
+/// How much wider the Players column is when it shows the queue too.
+const QUEUE_IN_PLAYERS: f32 = 22.0;
+
+/// A column's width, from the saved ones: the Players column is wider when the Queue column
+/// doesn't show, for the queue it shows instead.
+fn column_width(widths: &[f32; COLUMNS.len()], column: usize, shown: &[usize]) -> f32 {
+    if column == PLAYERS && !shown.contains(&QUEUE) {
+        widths[column] + QUEUE_IN_PLAYERS
+    } else {
+        widths[column]
+    }
+}
+
+/// What's marked after a server's name in the list.
+struct Marks<'a> {
+    /// The user's note on it (empty for none).
+    note: &'a str,
+    /// On the watch list.
+    watched: bool,
+    /// Why it looks fake or like a second listing, if it does.
+    suspect: Option<String>,
+}
+
+/// A server's name in the list, followed by its marks: a note, the watch list's bell, and a
+/// warning for a likely fake. A long name is cut short so the marks stay in view; hovering a
+/// mark says what it means (the name with the note mark shows the note).
+fn marked_name(ui: &mut egui::Ui, name: &str, marks: &Marks) {
+    if marks.note.is_empty() && !marks.watched && marks.suspect.is_none() {
+        ui.label(name);
+        return;
+    }
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let glyph = |ui: &egui::Ui, text: &str, color: Color32| {
+        ui.painter()
+            .layout_no_wrap(text.to_string(), font.clone(), color)
+    };
+    let bell = marks
+        .watched
+        .then(|| glyph(ui, "🔔", ui.visuals().text_color()));
+    let warning = marks.suspect.as_ref().map(|_| glyph(ui, "⚠", WARN));
+    let gap = ui.spacing().item_spacing.x;
+    let mut marks_width = 0.0;
+    if !marks.note.is_empty() {
+        marks_width += super::notes::NOTE_MARK_WIDTH + gap;
+    }
+    for galley in [&bell, &warning].into_iter().flatten() {
+        marks_width += galley.size().x + gap;
+    }
+    let room = (ui.available_width() - marks_width).max(0.0);
+    let label = ui
+        .allocate_ui(egui::vec2(room, ui.available_height()), |ui| {
+            ui.add(
+                egui::Label::new(name)
+                    .truncate()
+                    .show_tooltip_when_elided(marks.note.is_empty()),
+            )
+        })
+        .inner;
+    if !marks.note.is_empty() {
+        let mark = super::notes::note_mark(ui);
+        label.union(mark).on_hover_text(marks.note);
+    }
+    if let Some(bell) = bell {
+        ui.add(egui::Label::new(bell))
+            .on_hover_text("On your watch list: you'll be notified when it has room");
+    }
+    if let (Some(warning), Some(why)) = (warning, &marks.suspect) {
+        ui.add(egui::Label::new(warning))
+            .on_hover_text(format!("Likely fake\n{why}"));
+    }
+}
 
 fn ping_color(ping: u32) -> Color32 {
     match ping {
         0..=60 => GOOD,
         61..=120 => FAIR,
         _ => ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long name in a narrow column still leaves room for its marks.
+    #[test]
+    fn draws_marked_name() {
+        let ctx = egui::Context::default();
+        let marks = Marks {
+            note: "A note",
+            watched: true,
+            suspect: Some("Listed twice.".into()),
+        };
+        for width in [NAME_MIN, 300.0] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width + 50.0, 100.0),
+                )),
+                ..Default::default()
+            };
+            let mut used = 0.0;
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.allocate_ui(egui::vec2(width, 22.0), |ui| {
+                    ui.horizontal(|ui| {
+                        marked_name(ui, &"A very long server name ".repeat(5), &marks);
+                        used = ui.min_rect().width();
+                    });
+                });
+            });
+            // Fonts would go to the GPU here.
+            output.textures_delta.clear();
+            assert!(used <= width + 1.0, "{used} > {width}");
+        }
+    }
+
+    /// The optional columns make way, least useful first, and the main ones always stay.
+    #[test]
+    fn narrow_lists_drop_optional_columns() {
+        let all: Vec<usize> = (0..COLUMNS.len()).collect();
+        let needs = |shown: &[usize]| {
+            let columns: f32 = shown
+                .iter()
+                .map(|&c| column_width(&COLUMNS, c, shown))
+                .sum();
+            STAR_WIDTH + NAME_MIN + columns + LOCK_WIDTH + 8.0 * (shown.len() + 2) as f32
+        };
+        assert_eq!(shown_columns(&COLUMNS, needs(&all), 8.0), all);
+        assert_eq!(
+            shown_columns(&COLUMNS, needs(&all) - 1.0, 8.0),
+            [MAP, PLAYERS, QUEUE, PING, MODS, COUNTRY]
+        );
+        assert_eq!(
+            shown_columns(&COLUMNS, needs(&[MAP, PLAYERS, QUEUE, PING, MODS]), 8.0),
+            [MAP, PLAYERS, QUEUE, PING, MODS]
+        );
+        assert_eq!(shown_columns(&COLUMNS, 300.0, 8.0), MAIN);
+        assert_eq!(shown_columns(&COLUMNS, 0.0, 8.0), MAIN);
     }
 }

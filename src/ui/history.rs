@@ -148,6 +148,12 @@ impl App {
         };
         let answers = samples.iter().filter(|s| s.answered).count();
         if answers == 0 && !recording {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Favorite or watch this server to record its player history.")
+                    .weak()
+                    .small(),
+            );
             return;
         }
         let now = now_minute();
@@ -156,7 +162,7 @@ impl App {
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Players").strong());
+            ui.label(RichText::new("Player history").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.selectable_label(*week, "7 days").clicked() {
                     *week = true;
