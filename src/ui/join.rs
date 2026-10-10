@@ -147,7 +147,8 @@ impl WorkshopRun {
     }
 }
 
-static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
+/// Shared with the Mods page's runs, so their events can't be taken for each other's.
+pub(super) static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct Progress {
@@ -888,6 +889,10 @@ fn progress_cell(ui: &mut egui::Ui, p: &Progress) {
             if let Some(m) = &p.message {
                 label.on_hover_text(m);
             }
+        }
+        // Only the Mods page unsubscribes.
+        ItemState::Unsubscribing | ItemState::Unsubscribed => {
+            ui.label("");
         }
     }
 }

@@ -39,6 +39,15 @@ impl App {
             {
                 self.open_offline();
             }
+            if ui
+                .button("Mods")
+                .on_hover_text(
+                    "Your Workshop mods: their sizes, which servers use them, and cleaning up",
+                )
+                .clicked()
+            {
+                self.open_mods_page();
+            }
             ui.separator();
             ui.label("Search");
             let search = ui.add(

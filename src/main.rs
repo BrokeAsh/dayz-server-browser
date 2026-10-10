@@ -11,6 +11,7 @@ mod dzsa;
 mod geo;
 mod history;
 mod http;
+mod inventory;
 mod lan;
 mod launch;
 mod mods;

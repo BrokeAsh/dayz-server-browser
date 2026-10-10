@@ -196,6 +196,8 @@ pub struct FileDetails {
     pub time_updated: u64,
     /// The download's size in bytes, when Steam says.
     pub size: Option<u64>,
+    /// The item's name on the Workshop.
+    pub title: String,
 }
 
 #[derive(Deserialize)]
@@ -215,6 +217,7 @@ struct DetailsItem {
     publishedfileid: String,
     result: i32,
     time_updated: u64,
+    title: String,
     #[serde(deserialize_with = "lenient_size")]
     file_size: Option<u64>,
 }
@@ -255,6 +258,7 @@ pub fn file_details(ids: &[u64]) -> Result<HashMap<u64, FileDetails>> {
                 FileDetails {
                     time_updated: item.time_updated,
                     size: item.file_size,
+                    title: item.title,
                 },
             );
         }

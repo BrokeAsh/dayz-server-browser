@@ -17,6 +17,7 @@ mod filters;
 mod history;
 mod join;
 mod list;
+mod mods_page;
 mod more_filters;
 mod news;
 mod notes;
@@ -96,6 +97,8 @@ pub enum Msg {
     LanScan(Result<crate::lan::Scan, String>),
     /// The country database and lookups.
     Screen(screening::ScreenMsg),
+    /// For the Mods window.
+    Mods(mods_page::PageMsg),
 }
 
 /// What a server looked up by address is for.
@@ -213,6 +216,7 @@ pub struct App {
     offline: offline::Offline,
     /// Servers' countries, and the likely-fakes check.
     screen: screening::Screening,
+    mods_page: Option<mods_page::ModsPage>,
 }
 
 impl App {
@@ -284,6 +288,7 @@ impl App {
             last_update_check: None,
             offline: offline::Offline::default(),
             screen: screening::Screening::default(),
+            mods_page: None,
             settings,
             news: news::News::default(),
             discord: discord::DiscordStatus::default(),
@@ -595,6 +600,7 @@ impl App {
                         ..
                     } | workshop::Event::Exited
                 );
+                self.mods_workshop_event(run, &event);
                 if let Some(join) = &mut self.join {
                     join.workshop_event(run, event);
                 }
@@ -624,6 +630,7 @@ impl App {
                 }
             }
             Msg::Screen(msg) => self.screen_msg(msg),
+            Msg::Mods(msg) => self.mods_msg(msg),
         }
     }
 
@@ -1043,6 +1050,7 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.news_window(&ctx);
         self.offline_window(&ctx);
+        self.mods_window(&ctx);
 
         if let Some((message, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(4) {

@@ -9,6 +9,10 @@
 //! - `{"event":"error","message":…}` if it can't connect,
 //! - `{"event":"done"}` when every item is installed or failed.
 //!
+//! `dayz-browser-workshop --unsubscribe <item id>...` unsubscribes from each item instead,
+//! reporting `"state":"unsubscribing|unsubscribed|failed"` for each, then `done`. Steam deletes an
+//! unsubscribed item's files once DayZ (which this helper counts as) is no longer running.
+//!
 //! It stops early when its stdin closes (the browser cancelled or quit).
 
 use serde_json::json;
@@ -24,6 +28,8 @@ const DAYZ: u32 = 221100;
 const STALL: Duration = Duration::from_secs(600);
 /// Ask Steam again if a subscribed item hasn't started downloading after this long.
 const NUDGE: Duration = Duration::from_secs(15);
+/// Give up on unsubscribing when Steam hasn't answered for this long.
+const UNSUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn emit(value: serde_json::Value) {
     let mut out = std::io::stdout().lock();
@@ -55,10 +61,9 @@ impl Item {
 }
 
 fn main() {
-    let ids: Vec<u64> = std::env::args()
-        .skip(1)
-        .filter_map(|a| a.parse().ok())
-        .collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let unsubscribing = args.first().is_some_and(|a| a == "--unsubscribe");
+    let ids: Vec<u64> = args.iter().filter_map(|a| a.parse().ok()).collect();
     if ids.is_empty() {
         emit(json!({"event": "error", "message": "no Workshop items given"}));
         std::process::exit(2);
@@ -89,6 +94,10 @@ fn main() {
         }
     };
     emit(json!({"event": "ready"}));
+    if unsubscribing {
+        unsubscribe(&client, &ids, &stop);
+        return;
+    }
     let ugc = client.ugc();
 
     let (tx, rx) = mpsc::channel::<(u64, Result<(), String>)>();
@@ -189,4 +198,57 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Unsubscribes from each item, reporting each as Steam confirms it.
+fn unsubscribe(client: &Client, ids: &[u64], stop: &AtomicBool) {
+    let ugc = client.ugc();
+    let report = |id: u64, state: &str, message: Option<String>| {
+        let mut event = json!({"event": "item", "id": id, "state": state});
+        if let Some(message) = message {
+            event["message"] = json!(message);
+        }
+        emit(event);
+    };
+    let (tx, rx) = mpsc::channel::<(u64, Result<(), String>)>();
+    let mut waiting: Vec<u64> = Vec::new();
+    for &id in ids {
+        let file = PublishedFileId(id);
+        if !ugc.item_state(file).contains(ItemState::SUBSCRIBED) {
+            report(id, "unsubscribed", Some("it wasn't subscribed".into()));
+            continue;
+        }
+        report(id, "unsubscribing", None);
+        let tx = tx.clone();
+        ugc.unsubscribe_item(file, move |result| {
+            let _ = tx.send((id, result.map_err(|e| e.to_string())));
+        });
+        waiting.push(id);
+    }
+    let deadline = Instant::now() + UNSUBSCRIBE_TIMEOUT;
+    while !waiting.is_empty() {
+        if stop.load(Ordering::SeqCst) {
+            std::process::exit(3);
+        }
+        client.run_callbacks();
+        while let Ok((id, result)) = rx.try_recv() {
+            waiting.retain(|&w| w != id);
+            match result {
+                Ok(()) => report(id, "unsubscribed", None),
+                Err(e) => report(
+                    id,
+                    "failed",
+                    Some(format!("Steam couldn't unsubscribe: {e}")),
+                ),
+            }
+        }
+        if Instant::now() > deadline {
+            for &id in &waiting {
+                report(id, "failed", Some("Steam didn't answer".into()));
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    emit(json!({"event": "done"}));
 }

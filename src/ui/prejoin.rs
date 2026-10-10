@@ -161,6 +161,7 @@ mod tests {
                     FileDetails {
                         time_updated: 1,
                         size,
+                        title: String::new(),
                     },
                 )
             })

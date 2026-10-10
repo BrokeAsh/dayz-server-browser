@@ -1,5 +1,6 @@
-//! Downloading Workshop mods through the helper program (`dayz-browser-workshop`), which talks to
-//! the running Steam client the way the official launcher does. It's a separate, short-lived
+//! Downloading Workshop mods (or unsubscribing from them) through the helper program
+//! (`dayz-browser-workshop`), which talks to the running Steam client the way the official
+//! launcher does. It's a separate, short-lived
 //! process: while it's connected, Steam treats DayZ as running (and won't start the game), so it
 //! exits as soon as the downloads finish. It reports progress as JSON lines on stdout and stops
 //! if its stdin closes.
@@ -50,6 +51,9 @@ pub enum ItemState {
     Downloading,
     Installed,
     Failed,
+    /// Only when unsubscribing (`Helper::unsubscribe`).
+    Unsubscribing,
+    Unsubscribed,
 }
 
 /// Helpers started whose output hasn't ended yet (so they may still be downloading).
@@ -77,9 +81,24 @@ pub struct Helper {
 impl Helper {
     /// Starts downloading (subscribing first where needed) these Workshop items.
     pub fn start(ids: &[u64], report: impl Fn(Event) + Send + 'static) -> Result<Self> {
+        Self::run(None, ids, report)
+    }
+
+    /// Unsubscribes from these Workshop items. Steam deletes their files once the helper (which
+    /// it counts as DayZ) has quit.
+    pub fn unsubscribe(ids: &[u64], report: impl Fn(Event) + Send + 'static) -> Result<Self> {
+        Self::run(Some("--unsubscribe"), ids, report)
+    }
+
+    fn run(
+        mode: Option<&str>,
+        ids: &[u64],
+        report: impl Fn(Event) + Send + 'static,
+    ) -> Result<Self> {
         let path = helper().context("the Workshop helper program is missing")?;
         let mut command = Command::new(&path);
         command
+            .args(mode)
             .args(ids.iter().map(u64::to_string))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -191,5 +210,17 @@ mod tests {
         ));
         let e: Event = serde_json::from_str(r#"{"event":"ready"}"#).unwrap();
         assert!(matches!(e, Event::Ready));
+        // Unsubscribing reports no progress numbers.
+        let e: Event =
+            serde_json::from_str(r#"{"event":"item","id":5,"state":"unsubscribed"}"#).unwrap();
+        assert!(matches!(
+            e,
+            Event::Item {
+                id: 5,
+                state: ItemState::Unsubscribed,
+                done: 0,
+                ..
+            }
+        ));
     }
 }
