@@ -193,7 +193,10 @@ impl Filters {
             let needle = search.to_lowercase();
             let hit = s.name.to_lowercase().contains(&needle)
                 || s.map.to_lowercase().contains(&needle)
+                // Either port: the query port identifies it here, the game port is what most
+                // places show (and the bare IP matches both).
                 || s.addr().contains(&needle)
+                || format!("{}:{}", s.ip, s.game_port).contains(&needle)
                 || s.mods
                     .iter()
                     .any(|m| m.name.to_lowercase().contains(&needle));
@@ -275,6 +278,17 @@ mod tests {
         assert!(f.matches(&s, &Seen::default()));
         f.search = "namalsk".into();
         assert!(!f.matches(&s, &Seen::default()));
+        for (search, keep) in [
+            ("203.0.113.5", true),
+            ("203.0.113.5:27016", true),
+            ("203.0.113.5:2302", true),
+            (" 203.0.113.5:2302 ", true),
+            ("203.0.113.5:2402", false),
+            ("203.0.113.6", false),
+        ] {
+            f.search = search.into();
+            assert_eq!(f.matches(&s, &Seen::default()), keep, "{search}");
+        }
         f = Filters {
             mods: ModFilter::Vanilla,
             ..Default::default()
