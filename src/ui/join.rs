@@ -70,6 +70,8 @@ pub struct Join {
     switch_to: Option<(String, String)>,
     /// Bring the window to the front next frame.
     focus: bool,
+    /// Just opened: the window starts scrolled to the top, not where the last one was left.
+    fresh: bool,
     /// The free space on the Workshop library's drive.
     space: SpaceProbe,
 }
@@ -187,6 +189,7 @@ impl Join {
             version_read: None,
             switch_to: None,
             focus: false,
+            fresh: true,
             space: SpaceProbe::default(),
         }
     }
@@ -382,6 +385,7 @@ impl App {
         if std::mem::take(&mut join.focus) {
             super::windows::to_front(ctx, id);
         }
+        let fresh = std::mem::take(&mut join.fresh);
         let mut open = true;
         // Room below the top bar for the title, the buttons, and the status bar.
         let tallest = (ctx.content_rect().height() - 190.0).max(150.0);
@@ -392,11 +396,14 @@ impl App {
             .open(&mut open)
             .show(ctx, |ui| {
                 // In a short window everything above the buttons scrolls, so Launch always shows.
-                egui::ScrollArea::vertical()
+                let mut body = egui::ScrollArea::vertical()
                     .id_salt("join-body")
                     .max_height(tallest)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
+                    .auto_shrink([false, true]);
+                if fresh {
+                    body = body.vertical_scroll_offset(0.0);
+                }
+                body.show(ui, |ui| {
                     switch_prompt(ui, join, &mut action);
                     let server = &view.server;
                     ui.label(RichText::new(&server.name).strong().size(16.0));
@@ -1081,19 +1088,27 @@ fn wait_section(
             return;
         }
         let why_not = not_ready.or(needs_password.then_some("Type the password first"));
-        if ui
-            .add_enabled(
-                why_not.is_none(),
-                egui::Button::new("Join when there's room"),
-            )
-            .on_hover_text(
-                "Asks the server every second and starts DayZ as soon as it has a free slot and \
-                 nobody in its queue, such as right after a restart, so you don't wait in the \
-                 queue. Keep this window open.",
-            )
-            .on_disabled_hover_text(why_not.unwrap_or_default())
-            .clicked()
-        {
+        let button = ui.add_enabled(
+            why_not.is_none(),
+            egui::Button::new("Join when there's room"),
+        );
+        // Scrolled under the Launch button, it mustn't add its hover to Launch's.
+        let visible = ui
+            .ctx()
+            .pointer_hover_pos()
+            .is_some_and(|p| ui.clip_rect().contains(p));
+        let button = if visible {
+            button
+                .on_hover_text(
+                    "Asks the server every second and starts DayZ as soon as it has a free slot \
+                     and nobody in its queue, such as right after a restart, so you don't wait in \
+                     the queue. Keep this window open.",
+                )
+                .on_disabled_hover_text(why_not.unwrap_or_default())
+        } else {
+            button
+        };
+        if button.clicked() {
             *action = Some(Action::WaitForRoom);
         }
     });
