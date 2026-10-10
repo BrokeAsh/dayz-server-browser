@@ -5,7 +5,7 @@
 use eframe::egui::{self, RichText};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{App, ERROR, Fetch, GOOD, Msg, OverlayStatus, WARN, open_workshop, state_badge};
@@ -30,6 +30,15 @@ const SETTLE: Duration = Duration::from_secs(5);
 /// A launch with other mods soon after another, before the game shows up, could pull the first
 /// one's mod links from under it.
 const RELAUNCH_GAP: Duration = Duration::from_secs(45);
+/// While waiting, a mod list the server didn't send is asked for again this often...
+const RULES_AGAIN: Duration = Duration::from_secs(5);
+/// ...and only after this long without one do the list's mods (if it has them) do instead.
+const RULES_GIVE_UP: Duration = Duration::from_secs(30);
+/// While waiting, the installed game's version is read again this often, so a DayZ update
+/// meanwhile is noticed.
+const VERSION_AGAIN: Duration = Duration::from_secs(60);
+/// The join window's id, to bring it to the front.
+const WINDOW: &str = "join-window";
 
 pub struct Join {
     pub addr: String,
@@ -40,16 +49,32 @@ pub struct Join {
     run: Option<WorkshopRun>,
     message: Option<(String, bool)>,
     game_running: bool,
-    game_checked: Option<Instant>,
     /// Waiting for room (a free slot and nobody queued), to join as soon as there is some.
     watch: Option<SlotWatch>,
     /// While waiting: when the server stopped answering, and whether it stayed silent long enough
     /// to count as a restart (not just a lost reply).
     silent_since: Option<Instant>,
     server_down: bool,
-    /// While waiting, the mod list was asked for again (after a restart, or because the first
-    /// try failed). If that fails too, the list's mods are the best there is.
-    rules_retried: bool,
+    /// While waiting: since when a mod list from the server itself is wanted (after a restart,
+    /// or because asking failed), and when it was last asked for. Until one comes it's asked for
+    /// again every few seconds; only after a while do the list's mods do.
+    rules_wanted: Option<Instant>,
+    rules_asked: Option<Instant>,
+    /// While waiting: when the installed game's version was last read.
+    version_read: Option<Instant>,
+    /// Another server the user asked to open (its address and name) while this window is busy
+    /// waiting or downloading, until they say whether to switch.
+    switch_to: Option<(String, String)>,
+    /// Bring the window to the front next frame.
+    focus: bool,
+}
+
+/// Slot watches running, for the updater (which runs on its own thread).
+static WATCHING: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether the browser is waiting to join a server, from any thread.
+pub(super) fn waiting_for_room() -> bool {
+    WATCHING.load(Ordering::Relaxed) > 0
 }
 
 /// Asks one server for its player count and queue every second, until dropped. Its answers arrive
@@ -60,6 +85,7 @@ struct SlotWatch {
 
 impl SlotWatch {
     fn start(app: &App, addr: &str) -> Self {
+        WATCHING.fetch_add(1, Ordering::Relaxed);
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, ctx, addr, stopped) = (
             app.tx.clone(),
@@ -95,6 +121,7 @@ impl SlotWatch {
 impl Drop for SlotWatch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        WATCHING.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -135,12 +162,47 @@ impl Join {
             run: None,
             message: None,
             game_running: false,
-            game_checked: None,
             watch: None,
             silent_since: None,
             server_down: false,
-            rules_retried: false,
+            rules_wanted: None,
+            rules_asked: None,
+            version_read: None,
+            switch_to: None,
+            focus: false,
         }
+    }
+
+    /// Waiting for room or downloading mods: work that opening another server would stop.
+    pub(super) fn busy(&self) -> bool {
+        self.watch.is_some() || self.downloading()
+    }
+
+    /// Brings the window to the front, and if the server asked for isn't this one, asks whether
+    /// to stop what's going on here and open it.
+    pub(super) fn ask_to_switch(&mut self, addr: &str, name: &str) {
+        self.focus = true;
+        self.switch_to = (addr != self.addr).then(|| (addr.to_string(), name.to_string()));
+    }
+
+    /// While waiting, when the server hasn't sent its mod list: says it's being asked again.
+    /// `None` once the list's mods are used instead, and while an answer is awaited.
+    fn rules_wait(&self, view: &View) -> Option<&'static str> {
+        let wanted = self.rules_wanted?;
+        if view.rules_done || view.loading || !view.rules_failed {
+            return None;
+        }
+        (wanted.elapsed() < RULES_GIVE_UP || view.mods.is_none())
+            .then_some("the server hasn't sent its mod list; asking again every few seconds")
+    }
+
+    /// While waiting: the server never sent its mod list, so the list's are used.
+    fn using_list_mods(&self, view: &View) -> bool {
+        view.rules_failed
+            && view.mods.is_some()
+            && self
+                .rules_wanted
+                .is_some_and(|t| t.elapsed() >= RULES_GIVE_UP)
     }
 
     pub fn workshop_event(&mut self, run: u64, event: Event) {
@@ -251,6 +313,10 @@ enum Action {
     Launch(Vec<u64>),
     WaitForRoom,
     StopWaiting,
+    /// Open the other server asked for, stopping what's going on here.
+    Switch,
+    /// Keep this one, and forget the other.
+    Stay,
     Close,
 }
 
@@ -269,13 +335,19 @@ impl App {
         let mut action = self.watch_step(&view, not_ready.is_none());
 
         let join = self.join.as_mut().unwrap();
+        let id = egui::Id::new(WINDOW);
+        if std::mem::take(&mut join.focus) {
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+        }
         let mut open = true;
         egui::Window::new("Join server")
+            .id(id)
             .collapsible(false)
             .resizable(true)
             .default_width(480.0)
             .open(&mut open)
             .show(ctx, |ui| {
+                switch_prompt(ui, join, &mut action);
                 let server = &view.server;
                 ui.label(RichText::new(&server.name).strong().size(16.0));
                 let (players, slots) = (view.players, view.slots);
@@ -351,14 +423,7 @@ impl App {
         if self.local_loaded.elapsed() > Duration::from_secs(2) {
             self.reload_local();
         }
-        let join = self.join.as_mut().unwrap();
-        if join
-            .game_checked
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(2))
-        {
-            join.game_running = launch::game_running();
-            join.game_checked = Some(Instant::now());
-        }
+        self.join.as_mut().unwrap().game_running = launch::game_running_lately();
     }
 
     fn join_view(&self, addr: &str) -> View {
@@ -438,15 +503,23 @@ impl App {
     }
 
     /// While waiting for room: notices restarts, asks for the mod list again when it may have
-    /// changed, and launches once there's room and everything's ready.
+    /// changed (and keeps asking while the server doesn't send it), re-reads the game's version,
+    /// and launches once there's room and everything's ready.
     fn watch_step(&mut self, view: &View, ready: bool) -> Option<Action> {
         let join = self.join.as_mut()?;
         join.watch.as_ref()?;
+        if join
+            .version_read
+            .is_none_or(|t| t.elapsed() > VERSION_AGAIN)
+        {
+            join.version_read = Some(Instant::now());
+            self.read_game_version();
+        }
+        let join = self.join.as_mut()?;
         if view.down {
             let since = *join.silent_since.get_or_insert_with(Instant::now);
-            if since.elapsed() > RESTARTING && !join.server_down {
+            if since.elapsed() > RESTARTING {
                 join.server_down = true;
-                join.rules_retried = false;
             }
             return None;
         }
@@ -454,20 +527,42 @@ impl App {
             return None;
         }
         join.silent_since = None;
-        // Back after a restart (its mods may have changed), or the list couldn't be read: ask
-        // once more before joining.
-        let back = std::mem::take(&mut join.server_down);
-        if back || (view.rules_failed && !join.rules_retried) {
-            join.rules_retried = true;
-            self.rules.remove(&join.addr);
-            let addr = join.addr.clone();
-            self.request_rules(&addr);
+        // Back after a restart: its mods and version may have changed (DayZ updates often come
+        // with one), so ask for its mod list and read the game's version again before joining.
+        if std::mem::take(&mut join.server_down) {
+            join.rules_wanted = Some(Instant::now());
+            join.version_read = Some(Instant::now());
+            self.read_game_version();
+            self.ask_for_rules_again();
             return None;
         }
-        let mods_known = view.rules_done || (view.rules_failed && join.rules_retried);
+        if view.rules_done {
+            join.rules_wanted = None;
+        } else if view.rules_failed {
+            join.rules_wanted.get_or_insert_with(Instant::now);
+            if join.rules_asked.is_none_or(|t| t.elapsed() >= RULES_AGAIN) {
+                self.ask_for_rules_again();
+                return None;
+            }
+        }
+        let join = self.join.as_ref()?;
+        let mods_known = view.rules_done || join.using_list_mods(view);
         let password_ok = !view.locked || !join.password.is_empty();
-        (view.room() && ready && mods_known && password_ok)
+        // DayZ won't join a server on another version.
+        let same_version = view.other_version.is_none();
+        (view.room() && ready && mods_known && password_ok && same_version)
             .then(|| Action::Launch(view.workshop_ids()))
+    }
+
+    /// Asks the server for its mod list again, while waiting.
+    fn ask_for_rules_again(&mut self) {
+        let Some(join) = self.join.as_mut() else {
+            return;
+        };
+        join.rules_asked = Some(Instant::now());
+        let addr = join.addr.clone();
+        self.rules.remove(&addr);
+        self.request_rules(&addr);
     }
 
     fn join_action(&mut self, action: Action, view: &View) {
@@ -527,6 +622,25 @@ impl App {
                     join.watch = None;
                     join.silent_since = None;
                     join.server_down = false;
+                    join.rules_wanted = None;
+                    join.rules_asked = None;
+                    join.version_read = None;
+                }
+            }
+            Action::Switch => {
+                let Some((addr, _)) = self.join.as_mut().and_then(|j| j.switch_to.take()) else {
+                    return;
+                };
+                if self.index.contains_key(&addr) {
+                    self.join = None;
+                    self.open_join(&addr);
+                } else {
+                    self.toast("That server isn't in the list any more");
+                }
+            }
+            Action::Stay => {
+                if let Some(join) = self.join.as_mut() {
+                    join.switch_to = None;
                 }
             }
             Action::Subscribe(ids) => {
@@ -839,12 +953,14 @@ fn wait_section(
     ui.horizontal(|ui| {
         if waiting {
             ui.spinner();
-            match not_ready {
-                Some(reason) => {
-                    ui.label(RichText::new(format!("Waiting, but: {reason}")).color(WARN))
-                }
-                None if needs_password => {
-                    ui.label(RichText::new("Waiting, but: type the password first").color(WARN))
+            let but = |ui: &mut egui::Ui, reason: &str| {
+                ui.label(RichText::new(format!("Waiting, but: {reason}")).color(WARN))
+            };
+            match join.rules_wait(view).or(not_ready) {
+                Some(reason) => but(ui, reason),
+                None if needs_password => but(ui, "type the password first"),
+                None if view.other_version.is_some() => {
+                    but(ui, "the server runs another version of DayZ")
                 }
                 None if view.down => ui.label("Waiting for it to come back with room…"),
                 None => ui.label("Waiting for a free slot with no queue…"),
@@ -872,14 +988,51 @@ fn wait_section(
         }
     });
     if waiting {
+        if join.using_list_mods(view) {
+            let text = if view.states.is_empty() {
+                "The server hasn't sent its mod list; the server list says it needs none.".into()
+            } else {
+                format!(
+                    "The server hasn't sent its mod list, so the mods {} are used.",
+                    view.origin
+                )
+            };
+            ui.label(RichText::new(text).weak().small());
+        }
         ui.label(
             RichText::new(
-                "DayZ starts by itself when there's room; the mod list is checked again after a restart.",
+                "DayZ starts by itself when there's room; the mod list and your game's version \
+                 are checked again after a restart.",
             )
             .weak()
             .small(),
         );
     }
+}
+
+/// When another server was asked for while this window waits or downloads: whether to stop that
+/// and open it.
+fn switch_prompt(ui: &mut egui::Ui, join: &Join, action: &mut Option<Action>) {
+    let Some((_, name)) = &join.switch_to else {
+        return;
+    };
+    let stops = if join.watch.is_some() {
+        "stops waiting for room here"
+    } else {
+        "stops the mod downloads here (Steam finishes any it already started)"
+    };
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.label(RichText::new(format!("Open {name} instead? That {stops}.")).color(WARN));
+        ui.horizontal(|ui| {
+            if ui.button("Open it").clicked() {
+                *action = Some(Action::Switch);
+            }
+            if ui.button("Stay here").clicked() {
+                *action = Some(Action::Stay);
+            }
+        });
+    });
+    ui.add_space(6.0);
 }
 
 fn megabytes(bytes: u64) -> String {

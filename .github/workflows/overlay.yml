@@ -1,9 +1,10 @@
 name: Update the overlay
 
 # Keeps the overlay submodule on the overlay repository's latest main: every hour it looks for
-# new overlay commits, and if there are any, tests the browser with them on Linux and Windows and
-# commits the update here. (Commits made with the workflow's token don't start the CI workflow,
-# which is why the tests run here.) Run it by hand from the Actions tab to update right away.
+# new overlay commits, and if there are any, checks the browser with them the way CI does (format,
+# Linux and Windows, and the oldest supported Rust) and commits the update here. (Commits made
+# with the workflow's token don't start the CI workflow, which is why the checks run here.) Run it
+# by hand from the Actions tab to update right away.
 on:
   schedule:
     - cron: "23 * * * *"
@@ -18,13 +19,15 @@ permissions:
 # One update at a time.
 concurrency: overlay-update
 
+# Third-party actions are pinned to commits (the comment says which release or branch), so a
+# moved tag can't change what runs. dtolnay/rust-toolchain has branches, not tags, per toolchain.
 jobs:
   check:
     runs-on: ubuntu-22.04
     outputs:
       new: ${{ steps.look.outputs.new }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - id: look
         name: Look for new overlay commits
         run: |
@@ -35,6 +38,8 @@ jobs:
             echo "new=$latest" >> "$GITHUB_OUTPUT"
           fi
 
+  # Cargo.lock is brought in step with the overlay's dependencies here, once; the other jobs use
+  # (and the commit holds) exactly this one.
   test:
     needs: check
     if: needs.check.outputs.new != ''
@@ -43,39 +48,75 @@ jobs:
         os: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
       - name: Move the overlay to its new commit
         shell: bash
         run: git -C overlay fetch origin main && git -C overlay checkout --detach ${{ needs.check.outputs.new }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
-          components: clippy
+          components: rustfmt, clippy
+      - name: Bring Cargo.lock in step with the overlay
+        run: cargo metadata --format-version 1 > /dev/null
+        shell: bash
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cargo-lock
+          path: Cargo.lock
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libdbus-1-dev pkg-config
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --release -- -D warnings
-      - run: cargo test --workspace --release
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --release --locked -- -D warnings
+      - run: cargo test --workspace --release --locked
+
+  # The oldest Rust that Cargo.toml's rust-version promises, with the updated Cargo.lock.
+  msrv:
+    needs: [check, test]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+      - name: Move the overlay to its new commit
+        run: git -C overlay fetch origin main && git -C overlay checkout --detach ${{ needs.check.outputs.new }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cargo-lock
+      - uses: dtolnay/rust-toolchain@1d64bbcee8ef0c191a54710c227fd268a0d5014b # 1.95
+      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo check --workspace --locked --all-targets
 
   commit:
-    needs: [check, test]
+    needs: [check, test, msrv]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
           fetch-depth: 0
+      # The tested Cargo.lock, so nothing here needs Cargo (or resolves anything anew).
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cargo-lock
       - name: Commit the new overlay
         run: |
           old=$(git ls-tree HEAD overlay | awk '{print $3}')
           new=${{ needs.check.outputs.new }}
           git -C overlay fetch origin main
           git -C overlay checkout --detach "$new"
-          # Keep Cargo.lock in step with the overlay's dependencies.
-          cargo metadata --format-version 1 > /dev/null
+          git add overlay Cargo.lock
+          # Already there (say, another run committed it meanwhile): nothing to do.
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
           {
             echo "Overlay: update to ${new:0:7}"
             echo
@@ -83,7 +124,6 @@ jobs:
           } > message.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add overlay Cargo.lock
           git commit -F message.txt
           # Main may have moved on while the tests ran.
           git pull --rebase

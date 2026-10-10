@@ -47,6 +47,10 @@ const RESORT_EVERY: Duration = Duration::from_secs(4);
 /// so ordinary jitter doesn't shuffle the list.
 const PING_JITTER: u32 = 30;
 
+/// Held while the overlay is started or stopped, so turning it on and off quickly can't leave it
+/// running with the setting off.
+static OVERLAY_SWITCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub enum Msg {
     List {
         source: Source,
@@ -403,6 +407,7 @@ impl App {
         };
         self.overlay = OverlayStatus::Checking;
         self.spawn(move || {
+            let _switching = OVERLAY_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
             if overlay::is_running(&program) {
                 return Msg::Overlay(OverlayStatus::Running);
             }
@@ -422,6 +427,21 @@ impl App {
             Msg::Overlay(OverlayStatus::Failed(
                 "started, but it didn't answer".into(),
             ))
+        });
+    }
+
+    /// Quits the overlay, in the background: for when it's turned off in the settings.
+    fn stop_overlay(&mut self) {
+        self.overlay = OverlayStatus::Off;
+        let Some(program) = overlay::program() else {
+            return;
+        };
+        self.spawn(move || {
+            let _switching = OVERLAY_SWITCH.lock().unwrap_or_else(|e| e.into_inner());
+            match overlay::quit(&program) {
+                Ok(()) => Msg::Overlay(OverlayStatus::Off),
+                Err(e) => Msg::Overlay(OverlayStatus::Failed(format!("{e:#}"))),
+            }
         });
     }
 
@@ -847,12 +867,24 @@ impl App {
         }
     }
 
+    /// Opens the join window for a server. If it's open for that server already, it's kept (with
+    /// its password, waiting, and downloads) and brought to the front; if it's busy waiting or
+    /// downloading for another, it asks before switching.
     fn open_join(&mut self, addr: &str) {
         let Some(&i) = self.index.get(addr) else {
             return;
         };
         if self.selected.as_deref() != Some(addr) {
             self.select(addr, false);
+        }
+        let same = self.join.as_ref().is_some_and(|j| j.addr == addr);
+        if let Some(join) = self.join.as_mut()
+            && (same || join.busy())
+        {
+            join.ask_to_switch(addr, &self.servers[i].name);
+            if !same {
+                return;
+            }
         }
         // A fresh mod list for joining, even if one was fetched earlier.
         if !matches!(self.rules.get(addr), Some(Fetch::Loading)) {
@@ -862,7 +894,9 @@ impl App {
         self.reload_local();
         // DayZ may have updated since the browser started.
         self.read_game_version();
-        self.join = Some(join::Join::new(&self.servers[i]));
+        if !same {
+            self.join = Some(join::Join::new(&self.servers[i]));
+        }
     }
 }
 

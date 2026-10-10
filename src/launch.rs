@@ -11,6 +11,8 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::mods;
 use crate::server::Server;
@@ -185,6 +187,21 @@ pub fn build(
         args,
         cwd: Some(install.game.clone()),
     })
+}
+
+/// [`game_running`], asked at most every couple of seconds: for checks made every frame (looking
+/// through the process list each time would be slow).
+pub fn game_running_lately() -> bool {
+    static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    match *last {
+        Some((at, running)) if at.elapsed() < Duration::from_secs(2) => running,
+        _ => {
+            let running = game_running();
+            *last = Some((Instant::now(), running));
+            running
+        }
+    }
 }
 
 /// Whether DayZ is already running.

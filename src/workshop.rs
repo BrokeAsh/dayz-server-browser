@@ -9,6 +9,7 @@ use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const EXE: &str = if cfg!(windows) {
     "dayz-browser-workshop.exe"
@@ -51,6 +52,14 @@ pub enum ItemState {
     Failed,
 }
 
+/// Helpers started whose output hasn't ended yet (so they may still be downloading).
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a helper is running, from any thread (the updater asks, as it would replace it).
+pub fn running() -> bool {
+    RUNNING.load(Ordering::Relaxed) > 0
+}
+
 /// The helper next to this program, if it's there.
 pub fn helper() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -86,6 +95,7 @@ impl Helper {
         let stdout = child.stdout.take().context("no helper output")?;
         let stderr = child.stderr.take().context("no helper output")?;
         let stdin = child.stdin.take();
+        RUNNING.fetch_add(1, Ordering::Relaxed);
         // Anything on stderr means it failed in a way it couldn't report (such as Valve's library
         // missing), so pass the last of it on.
         let errors = std::thread::spawn(move || {
@@ -123,6 +133,7 @@ impl Helper {
                     message: format!("The Workshop helper failed: {tail}"),
                 });
             }
+            RUNNING.fetch_sub(1, Ordering::Relaxed);
             report(Event::Exited);
         });
         Ok(Self {

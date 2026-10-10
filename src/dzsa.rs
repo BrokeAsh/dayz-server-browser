@@ -3,7 +3,7 @@
 //! published limit, so the list is cached on disk and only fetched again when it's old or the
 //! user asks, and entries are read leniently.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -39,8 +39,13 @@ pub fn fetch(dir: &Path) -> Result<Vec<Server>> {
         .limit(MAX_BODY)
         .read_to_vec()
         .context("couldn't download the DZSA list")?;
-    let servers = parse(&body)?;
-    if let Err(e) = write_atomic(&dir.join(CACHE_FILE), &body) {
+    cache(dir, &body)
+}
+
+/// Reads a downloaded list and, only if it holds servers, caches it.
+fn cache(dir: &Path, body: &[u8]) -> Result<Vec<Server>> {
+    let servers = parse(body)?;
+    if let Err(e) = write_atomic(&dir.join(CACHE_FILE), body) {
         log::warn!("couldn't cache the DZSA list: {e:#}");
     }
     Ok(servers)
@@ -48,8 +53,9 @@ pub fn fetch(dir: &Path) -> Result<Vec<Server>> {
 
 #[derive(Deserialize)]
 struct Response {
-    #[serde(default)]
-    result: Vec<serde_json::Value>,
+    /// Missing (or not a list) when DZSA answers with an error instead.
+    #[serde(default, deserialize_with = "lenient")]
+    result: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -135,16 +141,24 @@ where
         .collect())
 }
 
+/// Reads the list. An answer without servers is an error (DZSA has thousands), so it never
+/// replaces a good list or the cache.
 fn parse(body: &[u8]) -> Result<Vec<Server>> {
     let response: Response =
         serde_json::from_slice(body).context("DZSA sent an unreadable list")?;
-    // One entry at a time, so a single odd one doesn't lose the whole list.
-    Ok(response
+    let entries = response
         .result
+        .context("DZSA answered without a server list; try again later")?;
+    // One entry at a time, so a single odd one doesn't lose the whole list.
+    let servers: Vec<Server> = entries
         .into_iter()
         .filter_map(|v| serde_json::from_value::<Entry>(v).ok())
         .filter_map(convert)
-        .collect())
+        .collect();
+    if servers.is_empty() {
+        bail!("DZSA sent an empty server list; try again later");
+    }
+    Ok(servers)
 }
 
 fn convert(e: Entry) -> Option<Server> {
@@ -213,5 +227,31 @@ mod tests {
             1,
             "nulls don't lose the server or its mods"
         );
+    }
+
+    #[test]
+    fn an_answer_without_servers_is_an_error() {
+        for body in [
+            &br#"{"status":1,"error":"busy"}"#[..],
+            br#"{"status":0,"result":null}"#,
+            br#"{"status":0,"result":"busy"}"#,
+            br#"{"status":0,"result":[]}"#,
+            br#"{"status":0,"result":[{"name":"no endpoint"}]}"#,
+        ] {
+            assert!(parse(body).is_err(), "{}", String::from_utf8_lossy(body));
+        }
+    }
+
+    #[test]
+    fn an_empty_answer_keeps_the_cache() {
+        let dir = std::env::temp_dir().join(format!("dzb-dzsa-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = br#"{"result":[{"name":"A","endpoint":{"ip":"203.0.113.1","port":27016}}]}"#;
+        std::fs::write(dir.join(CACHE_FILE), good).unwrap();
+        assert!(cache(&dir, br#"{"result":[]}"#).is_err());
+        assert_eq!(std::fs::read(dir.join(CACHE_FILE)).unwrap(), good);
+        assert_eq!(load_cache(&dir, None).unwrap().0.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

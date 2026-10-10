@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::settings::SettingsWindow;
-use super::{App, ERROR, GOOD, Msg};
+use super::{App, ERROR, GOOD, Msg, join};
 use crate::update::{self, Release};
-use crate::{launch, overlay};
+use crate::{launch, overlay, workshop};
 
 /// While the browser stays open, look for a new version again after this long.
 const CHECK_AGAIN: Duration = Duration::from_secs(12 * 60 * 60);
@@ -125,12 +125,15 @@ impl App {
         }
     }
 
-    /// Why updating has to wait, if it does.
+    /// Why updating has to wait, if it does (checked every frame, so the game's process is looked
+    /// for only every couple of seconds).
     fn update_blocker(&self) -> Option<&'static str> {
-        if launch::game_running() {
+        if launch::game_running_lately() {
             Some("Close DayZ first: updating restarts the map overlay")
-        } else if self.join.as_ref().is_some_and(|j| j.downloading()) {
+        } else if self.join.as_ref().is_some_and(|j| j.downloading()) || workshop::running() {
             Some("Wait for the mod downloads to finish")
+        } else if join::waiting_for_room() {
+            Some("Stop waiting to join first: updating restarts the browser")
         } else {
             None
         }
@@ -157,6 +160,24 @@ impl App {
                     }
                 },
                 || {
+                    // Any of these may have started during the download.
+                    if launch::game_running() {
+                        anyhow::bail!(
+                            "DayZ started meanwhile; close it and try again (nothing was changed)"
+                        );
+                    }
+                    if workshop::running() {
+                        anyhow::bail!(
+                            "mod downloads started meanwhile; try again once they finish \
+                             (nothing was changed)"
+                        );
+                    }
+                    if join::waiting_for_room() {
+                        anyhow::bail!(
+                            "waiting to join a server started meanwhile; stop it and try again \
+                             (nothing was changed)"
+                        );
+                    }
                     send(UpdateMsg::Installing);
                     // The new browser starts the new overlay.
                     if let Some(program) = overlay::program()
@@ -164,6 +185,7 @@ impl App {
                     {
                         log::warn!("couldn't stop the overlay for the update: {e:#}");
                     }
+                    Ok(())
                 },
             );
             send(UpdateMsg::Installed(result.map_err(|e| format!("{e:#}"))));

@@ -3,7 +3,8 @@ name: Release
 # Push a tag like v0.1.0 (matching Cargo.toml's version) to build Linux and Windows downloads and
 # publish them as a GitHub release, with that version's CHANGELOG.md section as the notes. Each
 # download includes the map overlay (built from the submodule) and Valve's Steamworks library for
-# the Workshop helper (it isn't in the repo).
+# the Workshop helper (it isn't in the repo). A tag with a pre-release part (v0.2.0-rc1) is
+# published as a pre-release, which the browser's update check doesn't offer.
 on:
   push:
     tags: ["v*"]
@@ -16,18 +17,20 @@ env:
 permissions:
   contents: read
 
+# Third-party actions are pinned to commits (the comment says which release or branch), so a
+# moved tag can't change what's built. Builds use Cargo.lock as committed (--locked).
 jobs:
   linux:
     # The oldest supported runner, so the binaries run on older glibc versions too.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libdbus-1-dev pkg-config
-      - run: cargo test --workspace --release
-      - run: cargo build --workspace --release
+      - run: cargo test --workspace --release --locked
+      - run: cargo build --workspace --release --locked
       - name: Check the version
         run: test "v$(./target/release/dayz-browser --version | cut -d' ' -f2)" = "$GITHUB_REF_NAME"
       - name: Package
@@ -38,7 +41,7 @@ jobs:
           cp "$(find target/release/build -path '*steamworks-sys-*/out/libsteam_api.so' | head -1)" "$name/"
           cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$name/"
           tar czf "$name.tar.gz" "$name"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux
           path: dayz-browser-*.tar.gz
@@ -46,12 +49,12 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace --release
-      - run: cargo build --workspace --release
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - run: cargo test --workspace --release --locked
+      - run: cargo build --workspace --release --locked
       - name: Check the version
         shell: bash
         run: test "v$(./target/release/dayz-browser.exe --version | cut -d' ' -f2)" = "$GITHUB_REF_NAME"
@@ -65,7 +68,7 @@ jobs:
           Copy-Item $dll.FullName $name
           Copy-Item README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows
           path: dayz-browser-*.zip
@@ -76,8 +79,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           merge-multiple: true
       - name: Release notes
@@ -90,5 +93,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha256sum dayz-browser-* > SHA256SUMS
+          # v0.2.0-rc1 and the like are pre-releases.
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
           gh release create "$GITHUB_REF_NAME" dayz-browser-* SHA256SUMS \
-            --title "$GITHUB_REF_NAME" --notes-file notes.md
+            --title "$GITHUB_REF_NAME" --notes-file notes.md "${prerelease[@]}"
