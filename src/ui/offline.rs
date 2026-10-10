@@ -26,6 +26,8 @@ pub enum OfflineMsg {
     Reset(String, Result<(), String>),
     /// An event from the Workshop helper run with this number.
     Workshop(u64, Event),
+    /// Saves an earlier update left behind were moved back (the maps where two saves met).
+    Restored(Result<Vec<String>, String>),
 }
 
 #[derive(Default)]
@@ -56,6 +58,9 @@ pub struct Offline {
     run: Option<ModRun>,
     /// Steam is the Flatpak, which can't see the browser's data folder unless allowed to.
     flatpak: bool,
+    /// Mission folders whose saves an update left in `.old`.
+    waiting: Vec<String>,
+    restoring: bool,
 }
 
 /// One run of the Workshop helper for a mission's mods.
@@ -80,13 +85,14 @@ static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 
 impl Offline {
     fn busy(&self) -> bool {
-        self.downloading.is_some() || self.resetting
+        self.downloading.is_some() || self.resetting || self.restoring
     }
 
     /// Reads which release is unpacked, and its missions (a few small files).
     fn refresh(&mut self) {
         let dir = offline::dir();
         self.installed = offline::installed(&dir);
+        self.waiting = offline::waiting_saves(&dir);
         self.missions = if self.installed.is_some() {
             offline::installed_missions(&dir)
         } else {
@@ -98,6 +104,24 @@ impl Offline {
             .is_some_and(|f| !self.missions.iter().any(|m| &m.folder == f && m.saved))
         {
             self.confirm_reset = None;
+        }
+    }
+
+    /// Mission folders' map names, as a list ("Chernarus and Livonia").
+    fn titles(&self, folders: &[String]) -> String {
+        let names: Vec<&str> = folders
+            .iter()
+            .map(|f| {
+                self.missions
+                    .iter()
+                    .find(|m| &m.folder == f)
+                    .map_or(f.as_str(), |m| m.title.as_str())
+            })
+            .collect();
+        match names.split_last() {
+            Some((last, [])) => last.to_string(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
         }
     }
 
@@ -120,6 +144,7 @@ enum Action {
     CancelMods,
     OpenPages(Vec<u64>),
     Close,
+    RestoreSaves,
 }
 
 /// At start: removes the game folder's `Missions` link from an earlier offline game, unless the
@@ -245,6 +270,21 @@ impl App {
                     self.reload_local();
                 }
             }
+            OfflineMsg::Restored(result) => {
+                window.restoring = false;
+                window.refresh();
+                match result {
+                    Ok(met) if met.is_empty() => self.toast("Moved the offline saves back"),
+                    Ok(met) => {
+                        let maps = self.offline.titles(&met);
+                        self.toast(format!(
+                            "Moved the offline saves back. {maps} had a newer save too; the older \
+                             one is kept beside it as storage_-1.bak"
+                        ));
+                    }
+                    Err(e) => self.offline.error = Some(e),
+                }
+            }
         }
     }
 
@@ -293,6 +333,8 @@ impl App {
             Some("Wait for the download to finish".into())
         } else if window.resetting {
             Some("Resetting a save…".into())
+        } else if window.restoring {
+            Some("Moving the saves back…".into())
         } else if window.run.as_ref().is_some_and(ModRun::running) {
             Some("Wait for the mod downloads to finish".into())
         } else if window.mods_settling() {
@@ -325,6 +367,9 @@ impl App {
                 });
                 ui.add_space(6.0);
                 release_section(ui, window, &mut action);
+                if !window.waiting.is_empty() {
+                    waiting_section(ui, window, &mut action);
+                }
                 if !window.missions.is_empty() {
                     ui.add_space(6.0);
                     maps_section(ui, window, &needs, blocked.as_deref(), helper, &mut action);
@@ -445,6 +490,23 @@ impl App {
                 Err(e) => self.offline.error = Some(format!("{e:#}")),
             },
             Action::OpenPages(ids) => ids.into_iter().for_each(open_workshop),
+            Action::RestoreSaves => {
+                let window = &mut self.offline;
+                if window.busy() {
+                    return;
+                }
+                if launch::game_running() {
+                    window.error = Some("Close DayZ first: it may be using the saves".into());
+                    return;
+                }
+                window.error = None;
+                window.restoring = true;
+                self.spawn(|| {
+                    Msg::Offline(OfflineMsg::Restored(
+                        offline::restore_saves(&offline::dir()).map_err(|e| format!("{e:#}")),
+                    ))
+                });
+            }
             Action::GetMods(ids) => {
                 let id = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
@@ -586,6 +648,35 @@ fn release_section(ui: &mut egui::Ui, window: &Offline, action: &mut Option<Acti
             ui.label(RichText::new(format!("Offline Mode {}{checked}", installed.tag)).weak());
         }
     }
+}
+
+/// Saves an earlier update couldn't move back, and moving them back.
+fn waiting_section(ui: &mut egui::Ui, window: &Offline, action: &mut Option<Action>) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(format!(
+            "An earlier update couldn't move your saves for {} back into place; they're waiting \
+             in the folder below.",
+            window.titles(&window.waiting),
+        ))
+        .color(WARN),
+    );
+    ui.horizontal(|ui| {
+        let restore = ui
+            .add_enabled(!window.busy(), egui::Button::new("Move them back"))
+            .on_hover_text(
+                "Where a map has a save of its own by now, the newer one is played and the \
+                 other kept beside it as storage_-1.bak",
+            );
+        if restore.clicked() {
+            *action = Some(Action::RestoreSaves);
+        }
+        ui.label(
+            RichText::new(offline::waiting_dir(&offline::dir()).display().to_string())
+                .weak()
+                .small(),
+        );
+    });
 }
 
 /// The maps, each with its save, Play, and the mods it needs.

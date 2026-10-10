@@ -283,9 +283,12 @@ fn install(dir: &Path, zip: &Path, release: &Release) -> Result<()> {
     let _ = std::fs::remove_dir_all(&staging);
     let result = (|| {
         let file = std::fs::File::open(zip)?;
+        let mut archive =
+            zip::ZipArchive::new(file).context("couldn't read the Offline Mode download")?;
+        check_archive(&mut archive)?;
         // `extract` keeps every entry inside `staging`.
-        zip::ZipArchive::new(file)
-            .and_then(|mut archive| archive.extract(&staging))
+        archive
+            .extract(&staging)
             .context("couldn't unpack the Offline Mode download")?;
         let missions = staging.join(MISSIONS);
         if self::missions(&missions).is_empty() {
@@ -298,24 +301,53 @@ fn install(dir: &Path, zip: &Path, release: &Release) -> Result<()> {
     result
 }
 
+/// Far more than the release unpacks to (a few tens of MB); a zip that says it holds more is
+/// something else, and isn't unpacked.
+const MAX_UNPACKED: u64 = 1_000_000_000;
+const MAX_ENTRIES: usize = 10_000;
+
+/// Checks, from a zip's directory, that it unpacks to a sensible size and number of files, and
+/// holds only files and folders (no links). Unpacking reads no more of an entry than its listed
+/// size, so this bounds what it writes.
+fn check_archive<R: std::io::Read + std::io::Seek>(archive: &mut zip::ZipArchive<R>) -> Result<()> {
+    check_within(archive, MAX_ENTRIES, MAX_UNPACKED)
+}
+
+fn check_within<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    max_entries: usize,
+    max_unpacked: u64,
+) -> Result<()> {
+    if archive.len() > max_entries {
+        bail!(
+            "the Offline Mode download holds {} files, unexpectedly many; not unpacking it",
+            archive.len()
+        );
+    }
+    let mut total = 0u64;
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index_raw(i)
+            .context("couldn't read the Offline Mode download")?;
+        if entry.is_symlink() {
+            bail!("the Offline Mode download holds a link; not unpacking it");
+        }
+        total = total.saturating_add(entry.size());
+    }
+    if total > max_unpacked {
+        bail!("the Offline Mode download unpacks to unexpectedly much; not unpacking it");
+    }
+    Ok(())
+}
+
 /// Puts the missions in `new` in place of `dir/Missions`, carrying the offline saves (and any
 /// mission the new release no longer has) over from the old ones.
 fn swap_in(dir: &Path, new: &Path) -> Result<()> {
     let current = dir.join(MISSIONS);
     let old = dir.join(OLD);
     // Left by an install that stopped part-way: its saves come first.
-    if old.exists() {
-        if current.exists() {
-            carry_over(&old, &current).with_context(|| {
-                format!("an earlier update left offline saves in {}", old.display())
-            })?;
-            std::fs::remove_dir_all(&old)
-                .with_context(|| format!("couldn't remove {}", old.display()))?;
-        } else {
-            std::fs::rename(&old, &current)
-                .with_context(|| format!("couldn't move {} back", old.display()))?;
-        }
-    }
+    restore_saves(dir)
+        .with_context(|| format!("an earlier update left offline saves in {}", old.display()))?;
     let had_current = current.exists();
     if had_current {
         std::fs::rename(&current, &old)
@@ -328,7 +360,7 @@ fn swap_in(dir: &Path, new: &Path) -> Result<()> {
         return Err(e).with_context(|| format!("couldn't put the new {} in place", MISSIONS));
     }
     if had_current {
-        carry_over(&old, &current).with_context(|| {
+        carry_over(&old, &current, Keep::Moved).with_context(|| {
             format!(
                 "the update is in place, but some offline saves are still in {}",
                 old.display()
@@ -340,34 +372,172 @@ fn swap_in(dir: &Path, new: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Moves each mission's save from `from` into the same mission in `to` (the user's save wins
-/// over one a release might ship), and missions `to` lacks entirely.
-fn carry_over(from: &Path, to: &Path) -> Result<()> {
+/// Where an update keeps the previous missions while it carries their saves over.
+pub fn waiting_dir(dir: &Path) -> PathBuf {
+    dir.join(OLD)
+}
+
+/// The maps (mission folders) whose saves an update left in [`waiting_dir`], because it couldn't
+/// move them back; [`restore_saves`] tries again.
+pub fn waiting_saves(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(waiting_dir(dir)) else {
+        return Vec::new();
+    };
+    let mut waiting: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| saves_in(&e.path()).next().is_some())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    waiting.sort();
+    waiting
+}
+
+/// Moves the saves an earlier update left in `dir/.old` back into the missions, and removes what
+/// else is there (the previous release's files). Where a map has a save in both, the newer one
+/// is played and the other kept beside it as `storage_-1.bak`. Returns the maps (mission
+/// folders) where that happened.
+pub fn restore_saves(dir: &Path) -> Result<Vec<String>> {
+    let current = dir.join(MISSIONS);
+    let old = dir.join(OLD);
+    if !old.exists() {
+        return Ok(Vec::new());
+    }
+    if !current.exists() {
+        std::fs::rename(&old, &current)
+            .with_context(|| format!("couldn't move {} back", old.display()))?;
+        return Ok(Vec::new());
+    }
+    let set_aside = carry_over(&old, &current, Keep::Newer)?;
+    std::fs::remove_dir_all(&old).with_context(|| format!("couldn't remove {}", old.display()))?;
+    Ok(set_aside)
+}
+
+/// Which save stays in place when a mission has one on both sides of [`carry_over`]. The other is
+/// never deleted, only set aside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Keep {
+    /// The one moved in: the user's save over one a release might ship.
+    Moved,
+    /// The one changed last (the one already in place when that can't be told).
+    Newer,
+}
+
+/// Moves each mission's saves (and saves set aside earlier) from `from` into the same mission in
+/// `to`, and missions `to` lacks entirely. Returns the missions where two saves met and one was
+/// set aside.
+fn carry_over(from: &Path, to: &Path, keep: Keep) -> Result<Vec<String>> {
     let mut failed = Vec::new();
+    let mut set_aside = Vec::new();
     for entry in std::fs::read_dir(from)?.flatten() {
         if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
+        let name = entry.file_name().to_string_lossy().into_owned();
         let target = to.join(entry.file_name());
         let moved = if !target.exists() {
             std::fs::rename(entry.path(), &target)
-        } else if entry.path().join(SAVE).exists() {
-            let save = target.join(SAVE);
-            if save.exists() {
-                let _ = std::fs::remove_dir_all(&save);
-            }
-            std::fs::rename(entry.path().join(SAVE), save)
         } else {
-            Ok(())
+            let saves: Vec<PathBuf> = saves_in(&entry.path()).collect();
+            saves.iter().try_for_each(|save| {
+                if save.file_name() != Some(SAVE.as_ref()) {
+                    // One set aside before: it stays set aside.
+                    return std::fs::rename(save, spare_name(&target));
+                }
+                let (aside, met) = move_save(save, &target, keep)?;
+                if met {
+                    log::info!("two offline saves for {name}; kept {}", aside.display());
+                    set_aside.push(name.clone());
+                }
+                Ok(())
+            })
         };
         if moved.is_err() {
-            failed.push(entry.file_name().to_string_lossy().into_owned());
+            failed.push(name);
         }
     }
     if !failed.is_empty() {
         bail!("couldn't move {}", failed.join(", "));
     }
-    Ok(())
+    Ok(set_aside)
+}
+
+/// Moves a mission's `save` into the mission folder `target`. If that has a save already, the
+/// one `keep` says stays as `storage_-1` and the other becomes a `storage_-1.bak` beside it.
+/// Returns where a save was set aside, and whether one was.
+fn move_save(save: &Path, target: &Path, keep: Keep) -> std::io::Result<(PathBuf, bool)> {
+    let dest = target.join(SAVE);
+    if !dest.exists() {
+        std::fs::rename(save, &dest)?;
+        return Ok((dest, false));
+    }
+    let moved_wins = match keep {
+        Keep::Moved => true,
+        Keep::Newer => match (last_change(save), last_change(&dest)) {
+            (Some(moved), Some(there)) => moved > there,
+            (Some(_), None) => true,
+            _ => false,
+        },
+    };
+    let spare = spare_name(target);
+    if moved_wins {
+        std::fs::rename(&dest, &spare)?;
+        std::fs::rename(save, &dest)?;
+    } else {
+        std::fs::rename(save, &spare)?;
+    }
+    Ok((spare, true))
+}
+
+/// A mission folder's save and the saves set aside beside it.
+fn saves_in(mission: &Path) -> impl Iterator<Item = PathBuf> {
+    std::fs::read_dir(mission)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n == SAVE || n.starts_with(&format!("{SAVE}.bak")))
+        })
+        .map(|e| e.path())
+}
+
+/// A free name in a mission folder for a save set aside: `storage_-1.bak`, then
+/// `storage_-1.bak2`, and so on.
+fn spare_name(mission: &Path) -> PathBuf {
+    let mut n = 1;
+    loop {
+        let name = if n == 1 {
+            format!("{SAVE}.bak")
+        } else {
+            format!("{SAVE}.bak{n}")
+        };
+        let path = mission.join(name);
+        if path.symlink_metadata().is_err() {
+            return path;
+        }
+        n += 1;
+    }
+}
+
+/// When anything in a save last changed: the newest modification time of what's in it (not of
+/// the folder itself, which moving it may touch). `None` for an empty save.
+fn last_change(save: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = None;
+    let mut stack = vec![save.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() && !entry.file_type().is_ok_and(|t| t.is_symlink()) {
+                stack.push(entry.path());
+            }
+            if let Ok(time) = meta.modified() {
+                newest = newest.max(Some(time));
+            }
+        }
+    }
+    newest
 }
 
 /// Deletes a mission's offline save, so the map starts over.
@@ -711,6 +881,135 @@ mod tests {
         assert!(current.join("COM.ChernarusPlus/init.c").is_file());
         assert!(reset_save(&root).is_err(), "not a mission");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Writes a save with one file, last changed `age` seconds ago.
+    fn save(mission: &Path, name: &str, text: &str, age: u64) {
+        let dir = mission.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut file = std::fs::File::create(dir.join("players.db")).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+        let time = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+        file.set_modified(time).unwrap();
+    }
+
+    fn read_save(mission: &Path, name: &str) -> String {
+        std::fs::read_to_string(mission.join(name).join("players.db")).unwrap()
+    }
+
+    #[test]
+    fn a_left_over_save_never_replaces_a_newer_one() {
+        let root = temp("leftover");
+        let (current, old) = (root.join(MISSIONS), root.join(OLD));
+        // An update moved the new missions in but couldn't move the saves back; then the user
+        // played Chernarus (a new save) but not Livonia.
+        let chernarus = mission(&old, "COM.ChernarusPlus");
+        save(&chernarus, SAVE, "before the update", 3600);
+        let livonia = mission(&old, "COM.Enoch");
+        save(&livonia, SAVE, "livonia", 7200);
+        let chernarus_now = mission(&current, "COM.ChernarusPlus");
+        save(&chernarus_now, SAVE, "played since", 60);
+        let livonia_now = mission(&current, "COM.Enoch");
+        assert_eq!(waiting_saves(&root), ["COM.ChernarusPlus", "COM.Enoch"]);
+        assert!(waiting_saves(&current).is_empty());
+
+        // The next update settles them first: the newer save is played, the older kept beside.
+        let new = root.join("new");
+        mission(&new, "COM.ChernarusPlus");
+        mission(&new, "COM.Enoch");
+        swap_in(&root, &new).unwrap();
+        assert_eq!(read_save(&chernarus_now, SAVE), "played since");
+        assert_eq!(
+            read_save(&chernarus_now, "storage_-1.bak"),
+            "before the update"
+        );
+        assert_eq!(read_save(&livonia_now, SAVE), "livonia");
+        assert!(!old.exists() && waiting_saves(&root).is_empty());
+
+        // The other way round: the waiting save is the newer one.
+        let old_chernarus = mission(&old, "COM.ChernarusPlus");
+        save(&old_chernarus, SAVE, "newest", 0);
+        // And one set aside before stays set aside, under a free name.
+        save(&old_chernarus, "storage_-1.bak", "set aside in .old", 9000);
+        assert_eq!(
+            restore_saves(&root).unwrap(),
+            ["COM.ChernarusPlus".to_string()]
+        );
+        assert_eq!(read_save(&chernarus_now, SAVE), "newest");
+        let mut kept: Vec<String> = ["storage_-1.bak", "storage_-1.bak2", "storage_-1.bak3"]
+            .iter()
+            .map(|n| read_save(&chernarus_now, n))
+            .collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            ["before the update", "played since", "set aside in .old"]
+        );
+        assert!(!old.exists());
+        assert!(restore_saves(&root).unwrap().is_empty(), "nothing waiting");
+
+        // Saves set aside are carried over by an update too.
+        mission(&new, "COM.ChernarusPlus");
+        swap_in(&root, &new).unwrap();
+        let chernarus_now = current.join("COM.ChernarusPlus");
+        assert_eq!(read_save(&chernarus_now, SAVE), "newest");
+        assert!(chernarus_now.join("storage_-1.bak3").is_dir());
+        assert!(current.join("COM.Enoch").join(SAVE).is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_update_keeps_a_shipped_save_aside() {
+        let root = temp("shipped");
+        let current = root.join(MISSIONS);
+        save(&mission(&current, "COM.Enoch"), SAVE, "mine", 3600);
+        let new = root.join("new");
+        // A release with a save of its own, newer by its files' times: the user's still wins.
+        save(&mission(&new, "COM.Enoch"), SAVE, "shipped", 0);
+        swap_in(&root, &new).unwrap();
+        let enoch = current.join("COM.Enoch");
+        assert_eq!(read_save(&enoch, SAVE), "mine");
+        assert_eq!(read_save(&enoch, "storage_-1.bak"), "shipped");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_odd_zips() {
+        let options = zip::write::SimpleFileOptions::default();
+        type Writer = zip::ZipWriter<std::io::Cursor<Vec<u8>>>;
+        let archive = |build: &dyn Fn(&mut Writer)| {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            build(&mut zip);
+            let bytes = zip.finish().unwrap().into_inner();
+            zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap()
+        };
+        let mut fine = archive(&|zip| {
+            zip.add_directory("Missions/COM.Enoch", options).unwrap();
+            zip.start_file("Missions/COM.Enoch/init.c", options)
+                .unwrap();
+            zip.write_all(b"void main() {}").unwrap();
+        });
+        assert!(check_archive(&mut fine).is_ok());
+        let mut link = archive(&|zip| {
+            zip.add_symlink("Missions", "/etc", options).unwrap();
+        });
+        assert!(check_archive(&mut link).is_err());
+        // Too many entries, or too much once unpacked (though tiny compressed); with small
+        // limits, to keep the test quick.
+        let mut many = archive(&|zip| {
+            for i in 0..=10 {
+                zip.add_directory(format!("d{i}"), options).unwrap();
+            }
+        });
+        assert!(check_within(&mut many, 11, 1000).is_ok());
+        assert!(check_within(&mut many, 10, 1000).is_err());
+        let mut big = archive(&|zip| {
+            let deflated = options.compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("big", deflated).unwrap();
+            zip.write_all(&[0u8; 100_000]).unwrap();
+        });
+        assert!(check_within(&mut big, 10, 100_000).is_ok());
+        assert!(check_within(&mut big, 10, 99_999).is_err());
     }
 
     #[test]

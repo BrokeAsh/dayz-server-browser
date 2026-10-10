@@ -86,7 +86,9 @@ usual, and in the game, Y (Z on German keyboards) opens its menu (items, telepor
 camera). It isn't a Workshop mod: the browser downloads its latest GitHub release (about 13 MB)
 into its data folder, and offers an update when a new one comes out. Each map's progress is saved
 in its mission folder (`storage_-1`); updates keep it, and **Reset save** deletes it to start that
-map over. Namalsk needs the Namalsk Island and Namalsk Survival mods, which the window downloads
+map over. An update never deletes a save: if it can't move one back, the window says so and offers
+**Move them back**, and where two saves of a map meet, the newer is played and the other kept
+beside it as `storage_-1.bak`. Namalsk needs the Namalsk Island and Namalsk Survival mods, which the window downloads
 like a server's mods.
 
 - **Linux:** `steam -applaunch 221100 -nolauncher -mission=Missions/<map's mission> -nosplash
@@ -161,14 +163,16 @@ free, and won't download them, launch, or wait to join until there's room (with 
 left, Steam couldn't install them, and joining would likely fail). When sizes aren't known, it
 says so and doesn't stop you.
 
-**Mods** in the top bar lists the Workshop mods Steam installed for your account, with their
-size, when each was last updated (and whether there's an update), and which of your favorite and
-recent servers use them. Search and sort them, open a mod's Workshop page or folder, or
-unsubscribe from mods, one at a time or all those no favorite or recent server uses. The helper
-does the unsubscribing; Steam deletes the files once it no longer counts DayZ as running, a
-moment after the helper quits. Folders Steam didn't install for your account (left behind, or
-another Steam account's) are listed apart, and can be deleted. Nothing is unsubscribed or deleted
-while DayZ runs.
+**Mods** in the top bar lists the Workshop mods Steam installed, with their size, when each was
+last updated (and whether there's an update), and which of your servers (favorites, recent,
+watched, and added by address) use them. Search and sort them; a mod's **…** button or a
+right-click on its row opens its Workshop page or folder, or unsubscribes from it. Select several
+to unsubscribe from them at once, or all those none of your servers uses. The helper does the
+unsubscribing; Steam deletes the files once it no longer counts DayZ as running, a moment after
+the helper quits. Folders Steam didn't install (left behind, or another Steam account's that it
+hasn't finished getting) are listed apart, and can be deleted. Steam records one account per mod,
+so a mod two accounts on this computer use may show as another account's; it stays an installed
+mod and is never offered for deleting. Nothing is unsubscribed or deleted while DayZ runs.
 
 ### Launching
 
@@ -187,7 +191,9 @@ Settings has the common launch options, added to every launch:
   background** (`-noPause`), **Windowed** (`-window`), **Empty main menu** (`-world=empty`, loads
   faster), and **CPU cores** (`-cpuCount=`, off by default).
 
-Anything else goes in **Extra launch arguments**, written as on a command line. Settings shows
+Anything else goes in **Extra launch arguments**, written as on a command line: on Windows as
+in a shortcut (backslashes in paths are kept, and double quotes group a path with spaces, as in
+`-profiles="C:\My Games\DayZ"`), on Linux as in a shell. Settings shows
 the arguments a launch adds, and flags extra arguments that repeat the options or the ones the
 browser sets itself (`-connect`, `-mod`, `-password`, `-port`). On Linux, the options count
 towards Steam's limit of about 1,000 characters.

@@ -1,6 +1,7 @@
-//! The Mods window: the Workshop mods Steam installed for this account, with their size, when
-//! they were last updated, and which favorite or recent servers use them; unsubscribing from
-//! them (through the Workshop helper); and the folders Steam left behind, which can be deleted.
+//! The Mods window: the Workshop mods Steam installed, with their size, when they were last
+//! updated, and which of the user's servers (favorite, recent, watched, or added) use them;
+//! unsubscribing from them (through the Workshop helper); and the folders Steam left behind,
+//! which can be deleted.
 
 use eframe::egui::{self, Align, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -114,7 +115,11 @@ impl ModsPage {
     }
 }
 
-/// The favorite and recent servers, and which mods each uses.
+/// What "your servers" are, for hover texts.
+const YOUR_SERVERS: &str = "Your servers are your favorites, recent and watched servers, and \
+                            servers added by address. Only those whose mods are known count.";
+
+/// The user's servers (favorite, recent, watched, and added), and which mods each uses.
 struct Usage {
     /// Each server's name, and its mods if it's known which.
     servers: Vec<(String, Option<Vec<ModRef>>)>,
@@ -177,13 +182,16 @@ impl App {
         }
     }
 
-    /// Favorites first, then recent servers, each once.
+    /// The user's servers, whose mods count as used: favorites first, then recent, watched, and
+    /// added servers, each once.
     fn usage_addrs(&self) -> Vec<String> {
         let mut seen = HashSet::new();
         self.state
             .favorites
             .iter()
             .chain(self.state.recent.iter().map(|r| &r.addr))
+            .chain(self.state.watched.iter().map(|w| &w.addr))
+            .chain(&self.state.added)
             .filter(|a| seen.insert(a.as_str()))
             .cloned()
             .collect()
@@ -205,14 +213,16 @@ impl App {
             .map(|addr| {
                 let name = match self.index.get(&addr) {
                     Some(&i) => self.servers[i].name.clone(),
-                    None => self
-                        .state
-                        .recent
-                        .iter()
-                        .find(|r| r.addr == addr)
-                        .map(|r| r.name.clone())
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or_else(|| addr.clone()),
+                    None => {
+                        let recent = self.state.recent.iter().find(|r| r.addr == addr);
+                        let watched = self.state.watched.iter().find(|w| w.addr == addr);
+                        recent
+                            .map(|r| r.name.clone())
+                            .filter(|n| !n.is_empty())
+                            .or_else(|| watched.map(|w| w.name.clone()))
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| addr.clone())
+                    }
                 };
                 (name, self.known_mods(&addr))
             })
@@ -250,7 +260,7 @@ impl App {
         }
         page.scanning = true;
         self.spawn(move || {
-            let account = inventory::current_account();
+            let account = inventory::current_account(&install);
             Msg::Mods(PageMsg::Scanned(inventory::scan(&install, account)))
         });
     }
@@ -423,6 +433,9 @@ impl App {
             page.open = false;
             page.confirm = None;
         }
+        if action.is_none() {
+            self.confirm_modal(ctx, &page, &usage, blocked, &mut action);
+        }
         if let Some(action) = action {
             self.mods_action(&mut page, action);
         }
@@ -460,7 +473,7 @@ impl App {
                 )
             };
             ui.selectable_value(&mut page.tab, Tab::Leftovers, leftovers)
-                .on_hover_text("Folders in the Workshop folder that Steam didn't install for you");
+                .on_hover_text("Folders in the Workshop folder that Steam didn't install");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let rescan = ui
                     .add_enabled(!page.scanning, egui::Button::new("⟳ Look again"))
@@ -511,17 +524,16 @@ impl App {
                     );
                     ui.spinner();
                 } else if !unknown.is_empty() {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} favorite or recent server{} didn't say which mods {} use{}",
-                            unknown.len(),
-                            plural(unknown.len()),
-                            if unknown.len() == 1 { "it" } else { "they" },
-                            if unknown.len() == 1 { "s" } else { "" },
-                        ))
-                        .color(WARN),
-                    )
-                    .on_hover_text(names_list(&unknown));
+                    let text = if unknown.len() == 1 {
+                        "1 of your servers didn't say which mods it uses".to_string()
+                    } else {
+                        format!(
+                            "{} of your servers didn't say which mods they use",
+                            unknown.len()
+                        )
+                    };
+                    ui.label(RichText::new(text).color(WARN))
+                        .on_hover_text(format!("{}\n\n{YOUR_SERVERS}", names_list(&unknown)));
                 }
             });
         });
@@ -547,13 +559,14 @@ impl App {
         ui.push_id("installed", |ui| {
             TableBuilder::new(ui)
                 .striped(true)
+                .sense(Sense::click())
                 .cell_layout(Layout::left_to_right(Align::Center))
                 .column(Column::exact(22.0))
                 .column(Column::remainder().at_least(160.0).clip(true))
                 .column(Column::exact(72.0))
                 .column(Column::exact(130.0))
                 .column(Column::exact(64.0))
-                .column(Column::exact(270.0))
+                .column(Column::exact(150.0))
                 .min_scrolled_height(table_height)
                 .max_scroll_height(table_height)
                 .header(HEADER_HEIGHT, |mut header| {
@@ -565,7 +578,13 @@ impl App {
                         ("Used by", Sort::UsedBy),
                     ] {
                         header.col(|ui| {
-                            if sort_header(ui, label, by, sort) {
+                            let mut response = sort_header(ui, label, by, sort);
+                            if by == Sort::UsedBy {
+                                response = response.on_hover_text(format!(
+                                    "How many of your servers list this mod.\n\n{YOUR_SERVERS}"
+                                ));
+                            }
+                            if response.clicked() {
                                 sort_clicked = Some(by);
                             }
                         });
@@ -596,6 +615,14 @@ impl App {
                                 hover = format!("{title}\n{hover}");
                             }
                             label.on_hover_text(hover);
+                            if r.folder.other_account.is_some() {
+                                ui.label(RichText::new("other account").weak().small())
+                                    .on_hover_text(
+                                        "Steam recorded this mod under another Steam account on \
+                                         this computer. It keeps one account per mod, so yours \
+                                         may use it too.",
+                                    );
+                            }
                         });
                         row.col(|ui| {
                             ui.label(size_text(r.folder.size));
@@ -613,7 +640,10 @@ impl App {
                         });
                         row.col(|ui| {
                             if r.users.is_empty() {
-                                ui.label(RichText::new("none").weak());
+                                ui.label(RichText::new("none").weak())
+                                    .on_hover_text(format!(
+                                        "None of your servers lists it.\n\n{YOUR_SERVERS}"
+                                    ));
                             } else {
                                 let names: Vec<&str> = r
                                     .users
@@ -631,57 +661,51 @@ impl App {
                                 .on_hover_text(names_list(&names));
                             }
                         });
+                        let unsubscribing = running.is_some()
+                            && matches!(progress, Some((ItemState::Unsubscribing, _)));
+                        // Why unsubscribing can't be done now, if it can't.
+                        let why_not = if gone {
+                            Some("Already unsubscribed")
+                        } else if unsubscribing {
+                            Some("Unsubscribing…")
+                        } else if !helper {
+                            Some(
+                                "The Workshop helper program is missing; unsubscribe on the \
+                                 mod's Workshop page instead",
+                            )
+                        } else {
+                            blocked
+                        };
+                        let mut menu = |ui: &mut egui::Ui| row_menu(ui, r.folder, why_not, action);
                         row.col(|ui| {
-                            if ui
-                                .small_button("Workshop")
-                                .on_hover_text("Open its Workshop page in Steam")
-                                .clicked()
-                            {
-                                *action = Some(Action::OpenPage(id));
-                            }
-                            if ui.small_button("Folder").clicked() {
-                                *action = Some(Action::OpenFolder(r.folder.path.clone()));
-                            }
+                            ui.menu_button("…", &mut menu).response.on_hover_text(
+                                "Its Workshop page, its folder, unsubscribing (or right-click \
+                                 the row)",
+                            );
                             match progress {
-                                Some((ItemState::Unsubscribing, _)) if running.is_some() => {
+                                _ if unsubscribing => {
                                     ui.spinner();
                                     ui.label(RichText::new("unsubscribing…").weak());
-                                    return;
                                 }
-                                Some((ItemState::Failed, message)) => {
+                                Some((ItemState::Failed, message)) if !gone => {
                                     let failed = ui.label(RichText::new("failed").color(ERROR));
                                     if let Some(m) = message {
                                         failed.on_hover_text(m);
                                     }
                                 }
+                                _ if gone => {
+                                    ui.label(RichText::new("unsubscribed").color(GOOD))
+                                        .on_hover_text(
+                                            "Steam deletes the files once it doesn't count DayZ \
+                                             as running any more",
+                                        );
+                                }
                                 _ => {}
                             }
-                            if gone {
-                                ui.label(RichText::new("unsubscribed").color(GOOD))
-                                    .on_hover_text(
-                                        "Steam deletes the files once it doesn't count DayZ as \
-                                         running any more",
-                                    );
-                                return;
-                            }
-                            let reason = blocked.or(if helper {
-                                None
-                            } else {
-                                Some(
-                                    "The Workshop helper program is missing; unsubscribe on \
-                                     the mod's Workshop page instead",
-                                )
-                            });
-                            let unsubscribe = ui
-                                .add_enabled(
-                                    reason.is_none(),
-                                    egui::Button::new("Unsubscribe…").small(),
-                                )
-                                .on_disabled_hover_text(reason.unwrap_or_default());
-                            if unsubscribe.clicked() {
-                                *action = Some(Action::Ask(Confirm::Unsubscribe(vec![id])));
-                            }
                         });
+                        egui::Popup::context_menu(&row.response())
+                            .id(egui::Id::new(("mods row menu", id)))
+                            .show(menu);
                     });
                 });
         });
@@ -724,12 +748,7 @@ impl App {
                 let id = folder.id;
                 let details = self.details.get(&id);
                 let title = details.map(|d| d.title.as_str()).filter(|t| !t.is_empty());
-                let name = folder
-                    .name
-                    .clone()
-                    .or_else(|| title.map(String::from))
-                    .or_else(|| server_names.get(&id).map(|n| n.to_string()))
-                    .unwrap_or_else(|| format!("Workshop item {id}"));
+                let name = shown_name(folder, title, server_names.get(&id).copied());
                 if !query.is_empty()
                     && !name.to_lowercase().contains(&query)
                     && !title.is_some_and(|t| t.to_lowercase().contains(&query))
@@ -783,134 +802,184 @@ impl App {
         helper: bool,
         action: &mut Option<Action>,
     ) {
-        if let Some(Confirm::Unsubscribe(ids)) = &page.confirm {
-            let size: u64 = ids
+        ui.horizontal(|ui| {
+            let unused: Vec<u64> = inventory
+                .installed
                 .iter()
-                .filter_map(|id| inventory.get(*id))
-                .map(|f| f.size)
-                .sum();
-            let used = ids
-                .iter()
-                .filter(|id| !usage.users(**id).is_empty())
-                .count();
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "Unsubscribe from {} mod{} ({})?",
-                        ids.len(),
-                        plural(ids.len()),
-                        size_text(size)
-                    ))
-                    .strong(),
-                );
-                let (files, them) = if ids.len() == 1 {
-                    ("its files", "it")
-                } else {
-                    ("their files", "them")
-                };
-                ui.label(format!(
-                    "Steam deletes {files} once it doesn't count DayZ as running any more: a \
-                     moment after the browser's helper is done. A server that needs {them} later \
-                     downloads {them} again."
+                .map(|f| f.id)
+                .filter(|id| usage.users(*id).is_empty() && !page.unsubscribed.contains(id))
+                .collect();
+            let select = ui
+                .add_enabled(
+                    !unused.is_empty(),
+                    egui::Button::new(format!("Select unused mods ({})", unused.len())),
+                )
+                .on_hover_text(format!(
+                    "Selects the mods none of your servers lists.\n\n{YOUR_SERVERS}"
                 ));
-                if used > 0 {
-                    let text = match (ids.len(), used) {
-                        (1, _) => "It's used by your favorite or recent servers.".to_string(),
-                        (_, 1) => "1 of them is used by your favorite or recent servers.".into(),
-                        (_, n) => {
-                            format!("{n} of them are used by your favorite or recent servers.")
-                        }
-                    };
-                    ui.label(RichText::new(text).color(WARN));
-                }
-                let unknown = usage.unknown();
-                if !unknown.is_empty() {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} favorite or recent server{} didn't say which mods {} use, so \
-                             some of these may still be needed.",
-                            unknown.len(),
-                            plural(unknown.len()),
-                            if unknown.len() == 1 { "it" } else { "they" },
-                        ))
-                        .color(WARN),
-                    )
-                    .on_hover_text(names_list(&unknown));
-                }
-                ui.horizontal(|ui| {
-                    let go = ui
-                        .add_enabled(blocked.is_none(), egui::Button::new("Unsubscribe"))
-                        .on_disabled_hover_text(blocked.unwrap_or_default());
-                    if go.clicked() {
-                        *action = Some(Action::Unsubscribe(ids.clone()));
-                    }
-                    if ui.button("Cancel").clicked() {
-                        *action = Some(Action::Cancel);
-                    }
-                });
-            });
-        } else {
-            ui.horizontal(|ui| {
-                let unused: Vec<u64> = inventory
-                    .installed
+            if select.clicked() {
+                page.selected = unused.into_iter().collect();
+            }
+            if !page.selected.is_empty() && ui.button("Clear selection").clicked() {
+                page.selected.clear();
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let size: u64 = page
+                    .selected
                     .iter()
-                    .map(|f| f.id)
-                    .filter(|id| usage.users(*id).is_empty() && !page.unsubscribed.contains(id))
-                    .collect();
-                let select = ui
-                    .add_enabled(
-                        !unused.is_empty(),
-                        egui::Button::new(format!(
-                            "Select mods no favorite or recent server uses ({})",
-                            unused.len()
-                        )),
+                    .filter_map(|id| inventory.get(*id))
+                    .map(|f| f.size)
+                    .sum();
+                let reason = if page.selected.is_empty() {
+                    Some("Select some mods first")
+                } else if !helper {
+                    Some("The Workshop helper program is missing")
+                } else {
+                    blocked
+                };
+                let n = page.selected.len();
+                let label = if n == 0 {
+                    "Unsubscribe selected…".to_string()
+                } else {
+                    format!(
+                        "Unsubscribe selected ({n} mod{}, {})…",
+                        plural(n),
+                        size_text(size)
                     )
-                    .on_hover_text(
-                        "Mods none of your favorite or recent servers lists (only the ones whose \
-                         mods are known)",
-                    );
-                if select.clicked() {
-                    page.selected = unused.into_iter().collect();
+                };
+                let unsubscribe = ui
+                    .add_enabled(reason.is_none(), egui::Button::new(label))
+                    .on_disabled_hover_text(reason.unwrap_or_default());
+                if unsubscribe.clicked() {
+                    *action = Some(Action::Ask(Confirm::Unsubscribe(
+                        page.selected.iter().copied().collect(),
+                    )));
                 }
-                if !page.selected.is_empty() && ui.button("Clear selection").clicked() {
-                    page.selected.clear();
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let size: u64 = page
-                        .selected
-                        .iter()
-                        .filter_map(|id| inventory.get(*id))
-                        .map(|f| f.size)
-                        .sum();
-                    let reason = if page.selected.is_empty() {
-                        Some("Select some mods first")
-                    } else if !helper {
-                        Some("The Workshop helper program is missing")
-                    } else {
-                        blocked
-                    };
-                    let n = page.selected.len();
-                    let label = if n == 0 {
-                        "Unsubscribe selected…".to_string()
-                    } else {
-                        format!(
-                            "Unsubscribe selected ({n} mod{}, {})…",
-                            plural(n),
-                            size_text(size)
-                        )
-                    };
-                    let unsubscribe = ui
-                        .add_enabled(reason.is_none(), egui::Button::new(label))
-                        .on_disabled_hover_text(reason.unwrap_or_default());
-                    if unsubscribe.clicked() {
-                        *action = Some(Action::Ask(Confirm::Unsubscribe(
-                            page.selected.iter().copied().collect(),
-                        )));
-                    }
-                });
             });
-        }
+        });
         status_line(ui, page);
+    }
+
+    /// Asks, in a small window over the Mods window, before unsubscribing or deleting a folder.
+    fn confirm_modal(
+        &self,
+        ctx: &egui::Context,
+        page: &ModsPage,
+        usage: &Usage,
+        blocked: Option<&'static str>,
+        action: &mut Option<Action>,
+    ) {
+        let (Some(confirm), Some(inventory)) = (&page.confirm, &page.inventory) else {
+            return;
+        };
+        let modal = egui::Modal::new(egui::Id::new("mods-confirm")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            match confirm {
+                Confirm::Unsubscribe(ids) => {
+                    self.unsubscribe_confirm(ui, ids, inventory, usage, blocked, action)
+                }
+                Confirm::Delete(id) => delete_confirm(ui, *id, inventory, blocked, action),
+            }
+        });
+        if modal.should_close() && action.is_none() {
+            *action = Some(Action::Cancel);
+        }
+    }
+
+    fn unsubscribe_confirm(
+        &self,
+        ui: &mut egui::Ui,
+        ids: &[u64],
+        inventory: &Inventory,
+        usage: &Usage,
+        blocked: Option<&'static str>,
+        action: &mut Option<Action>,
+    ) {
+        let folders: Vec<&Folder> = ids.iter().filter_map(|id| inventory.get(*id)).collect();
+        let size: u64 = folders.iter().map(|f| f.size).sum();
+        let names: Vec<String> = folders.iter().map(|f| self.mod_name(f, usage)).collect();
+        let used = ids
+            .iter()
+            .filter(|id| !usage.users(**id).is_empty())
+            .count();
+        let question = match names.as_slice() {
+            [name] => format!("Unsubscribe from {name} ({})?", size_text(size)),
+            _ => format!("Unsubscribe from {} mods ({})?", ids.len(), size_text(size)),
+        };
+        let heading = ui.label(RichText::new(question).strong());
+        if names.len() > 1 {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            heading.on_hover_text(names_list(&names));
+        }
+        let (files, them) = if ids.len() == 1 {
+            ("its files", "it")
+        } else {
+            ("their files", "them")
+        };
+        ui.label(format!(
+            "Steam deletes {files} once it doesn't count DayZ as running any more: a moment after \
+             the browser's helper is done. A server that needs {them} later downloads {them} \
+             again."
+        ));
+        if used > 0 {
+            let text = match (ids.len(), used) {
+                (1, _) => "One of your servers uses it.".to_string(),
+                (_, 1) => "1 of them is used by your servers.".into(),
+                (_, n) => format!("{n} of them are used by your servers."),
+            };
+            ui.label(RichText::new(text).color(WARN))
+                .on_hover_text(YOUR_SERVERS);
+        }
+        let unknown = usage.unknown();
+        if !unknown.is_empty() {
+            let (servers, they) = if unknown.len() == 1 {
+                ("1 of your servers".to_string(), "it uses")
+            } else {
+                (format!("{} of your servers", unknown.len()), "they use")
+            };
+            let needed = if ids.len() == 1 {
+                "this may still be needed"
+            } else {
+                "some of these may still be needed"
+            };
+            ui.label(
+                RichText::new(format!(
+                    "{servers} didn't say which mods {they}, so {needed}."
+                ))
+                .color(WARN),
+            )
+            .on_hover_text(names_list(&unknown));
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let go = ui
+                .add_enabled(blocked.is_none(), egui::Button::new("Unsubscribe"))
+                .on_disabled_hover_text(blocked.unwrap_or_default());
+            if go.clicked() {
+                *action = Some(Action::Unsubscribe(ids.to_vec()));
+            }
+            if ui.button("Cancel").clicked() {
+                *action = Some(Action::Cancel);
+            }
+        });
+    }
+
+    /// The name a mod is shown by: its own (from `meta.cpp`), the Workshop's, or a server's.
+    fn mod_name(&self, folder: &Folder, usage: &Usage) -> String {
+        let title = self
+            .details
+            .get(&folder.id)
+            .map(|d| d.title.as_str())
+            .filter(|t| !t.is_empty());
+        let from_server = || {
+            usage
+                .servers
+                .iter()
+                .flat_map(|(_, mods)| mods.iter().flatten())
+                .find(|m| m.id == folder.id && !m.name.is_empty())
+                .map(|m| m.name.as_str())
+        };
+        shown_name(folder, title, from_server())
     }
 
     fn mods_action(&mut self, page: &mut ModsPage, action: Action) {
@@ -971,12 +1040,11 @@ impl App {
                 }
                 let Ok(install) = &self.install else { return };
                 let install = install.clone();
-                let account = page.inventory.as_ref().and_then(|i| i.account);
                 page.deleting = Some(id);
                 page.message = None;
                 self.spawn(move || {
-                    let result = inventory::delete_leftover(&install, id, account)
-                        .map_err(|e| format!("{e:#}"));
+                    let result =
+                        inventory::delete_leftover(&install, id).map_err(|e| format!("{e:#}"));
                     Msg::Mods(PageMsg::Deleted(id, result))
                 });
             }
@@ -993,9 +1061,9 @@ fn leftovers_tab(
     action: &mut Option<Action>,
 ) {
     ui.label(
-        "Folders in DayZ's Workshop folder that Steam didn't install for your Steam account: left \
-         behind by Steam, or another account's on this computer. Deleting one only frees the \
-         space; the join window downloads a mod again when a server needs it.",
+        "Folders in DayZ's Workshop folder that Steam didn't install: left behind by Steam, or \
+         another account's on this computer that Steam hasn't finished getting. Deleting one only \
+         frees the space; the join window downloads a mod again when a server needs it.",
     );
     if inventory.no_records {
         ui.label(
@@ -1021,7 +1089,6 @@ fn leftovers_tab(
         return;
     }
     bottom_panel("mods-leftovers-bottom").show(ui, |ui| {
-        delete_confirm(ui, page, inventory, blocked, action);
         status_line(ui, page);
     });
     let mut folders: Vec<&Folder> = inventory.leftovers.iter().collect();
@@ -1061,7 +1128,9 @@ fn leftovers_tab(
                     row.col(|ui| {
                         let why = match f.leftover {
                             _ if f.link => "A link to a folder elsewhere",
-                            Some(Leftover::OtherAccount(_)) => "Another Steam account's",
+                            Some(Leftover::OtherAccount(_)) => {
+                                "Another Steam account's, not installed"
+                            }
                             _ => "Steam has no record of it",
                         };
                         ui.label(why);
@@ -1098,45 +1167,49 @@ fn leftovers_tab(
 /// Asks before deleting a leftover folder.
 fn delete_confirm(
     ui: &mut egui::Ui,
-    page: &ModsPage,
+    id: u64,
     inventory: &Inventory,
     blocked: Option<&'static str>,
     action: &mut Option<Action>,
 ) {
-    if let Some(Confirm::Delete(id)) = page.confirm
-        && let Some(f) = inventory.get(id)
-    {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(
-                RichText::new(format!(
-                    "Delete {} ({})? This can't be undone.",
-                    f.path.display(),
-                    size_text(f.size)
-                ))
-                .strong(),
-            );
-            if matches!(f.leftover, Some(Leftover::OtherAccount(_))) {
-                ui.label(
-                    RichText::new(
-                        "Another Steam account on this computer subscribed to it; Steam may \
-                         download it again when that account signs in.",
-                    )
-                    .color(WARN),
-                );
-            }
-            ui.horizontal(|ui| {
-                let go = ui
-                    .add_enabled(blocked.is_none(), egui::Button::new("Delete"))
-                    .on_disabled_hover_text(blocked.unwrap_or_default());
-                if go.clicked() {
-                    *action = Some(Action::Delete(id));
-                }
-                if ui.button("Cancel").clicked() {
-                    *action = Some(Action::Cancel);
-                }
-            });
-        });
+    let Some(f) = inventory.get(id) else {
+        // Gone since: nothing to ask.
+        *action = Some(Action::Cancel);
+        return;
+    };
+    let name = match &f.name {
+        Some(name) => format!("{name} ({id})"),
+        None => format!("folder {id}"),
+    };
+    ui.label(
+        RichText::new(format!(
+            "Delete {name} ({})? This can't be undone.",
+            size_text(f.size)
+        ))
+        .strong(),
+    );
+    ui.label(RichText::new(f.path.display().to_string()).weak().small());
+    if matches!(f.leftover, Some(Leftover::OtherAccount(_))) {
+        ui.label(
+            RichText::new(
+                "Another Steam account on this computer subscribed to it; Steam may download it \
+                 again when that account signs in.",
+            )
+            .color(WARN),
+        );
     }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let go = ui
+            .add_enabled(blocked.is_none(), egui::Button::new("Delete"))
+            .on_disabled_hover_text(blocked.unwrap_or_default());
+        if go.clicked() {
+            *action = Some(Action::Delete(id));
+        }
+        if ui.button("Cancel").clicked() {
+            *action = Some(Action::Cancel);
+        }
+    });
 }
 
 /// The helper's progress, and the last result or error.
@@ -1181,8 +1254,24 @@ fn body_height(ui: &egui::Ui) -> f32 {
 /// The tables' header row.
 const HEADER_HEIGHT: f32 = 22.0;
 
-/// A sortable column's header; true when clicked.
-fn sort_header(ui: &mut egui::Ui, label: &str, by: Sort, (sort, descending): (Sort, bool)) -> bool {
+/// The name a mod is shown by: its own (from `meta.cpp`), else the Workshop's `title`, else
+/// the one a server gave, else its id.
+fn shown_name(folder: &Folder, title: Option<&str>, from_server: Option<&str>) -> String {
+    folder
+        .name
+        .clone()
+        .or_else(|| title.map(String::from))
+        .or_else(|| from_server.map(String::from))
+        .unwrap_or_else(|| format!("Workshop item {}", folder.id))
+}
+
+/// A sortable column's header, which sorts by it when clicked.
+fn sort_header(
+    ui: &mut egui::Ui,
+    label: &str,
+    by: Sort,
+    (sort, descending): (Sort, bool),
+) -> egui::Response {
     let arrow = match (sort == by, descending) {
         (false, _) => "",
         (true, true) => " ⏷",
@@ -1191,7 +1280,40 @@ fn sort_header(ui: &mut egui::Ui, label: &str, by: Sort, (sort, descending): (So
     ui.add(
         egui::Label::new(RichText::new(format!("{label}{arrow}")).strong()).sense(Sense::click()),
     )
-    .clicked()
+}
+
+/// The menu of an installed mod's row, from its … button or a right-click; `why_not` says why it
+/// can't be unsubscribed from now, if it can't. Each item does its thing and closes the menu.
+fn row_menu(
+    ui: &mut egui::Ui,
+    folder: &Folder,
+    why_not: Option<&str>,
+    action: &mut Option<Action>,
+) {
+    if ui
+        .button("Workshop page")
+        .on_hover_text("Open its Workshop page in Steam")
+        .clicked()
+    {
+        *action = Some(Action::OpenPage(folder.id));
+        ui.close();
+    }
+    if ui
+        .button("Open folder")
+        .on_hover_text(folder.path.display().to_string())
+        .clicked()
+    {
+        *action = Some(Action::OpenFolder(folder.path.clone()));
+        ui.close();
+    }
+    ui.separator();
+    let unsubscribe = ui
+        .add_enabled(why_not.is_none(), egui::Button::new("Unsubscribe…"))
+        .on_disabled_hover_text(why_not.unwrap_or_default());
+    if unsubscribe.clicked() {
+        *action = Some(Action::Ask(Confirm::Unsubscribe(vec![folder.id])));
+        ui.close();
+    }
 }
 
 /// What an unsubscribing run did, and whether that's an error: how many mods Steam unsubscribed,
