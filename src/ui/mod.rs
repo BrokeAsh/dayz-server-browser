@@ -229,6 +229,9 @@ impl App {
         let ctx = cc.egui_ctx.clone();
         // Rows are clicked to select them, so labels mustn't take clicks for text selection.
         ctx.global_style_mut(|style| style.interaction.selectable_labels = false);
+        // Shift normally turns the mouse wheel sideways, which no list here needs: holding it
+        // mustn't stop the lists scrolling.
+        ctx.options_mut(|o| o.input_options.horizontal_scroll_modifier = egui::Modifiers::NONE);
         let (tx, rx) = mpsc::channel();
         let pinger = {
             let tx = tx.clone();
