@@ -1,10 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - Holding Shift no longer stops the mouse wheel scrolling the lists.
-- The map overlay shows the server's player count and queue, keeps zooming with Shift held, and
-  finds the place names, wells, and water of maps like Chiemsee.
+- Map overlay 0.2.1:
+  - The toolbar shows the server's player count and queue, updated every 30 seconds.
+  - Holding Shift (to sprint) no longer stops the mouse wheel zooming the map.
+  - Maps that don't ship loot files (Chiemsee, Deadfall, Bitterroot, Azalea, Catalina Island,
+    New York, PNW, Valning, Stuart Island) get military, police, medical, fire station, fuel,
+    and other loot buildings, with what the base game spawns in them.
+  - Maps like Chiemsee, whose world config is in another of the mod's files, get their place
+    names, wells, and fresh water.
 
 ## 0.2.0
 
