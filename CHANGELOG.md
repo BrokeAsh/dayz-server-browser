@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Holding Shift no longer stops the mouse wheel scrolling the lists.
+- The map overlay shows the server's player count and queue, keeps zooming with Shift held, and
+  finds the place names, wells, and water of maps like Chiemsee.
+
 ## 0.2.0
 
 New:
