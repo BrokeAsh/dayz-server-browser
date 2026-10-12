@@ -4,6 +4,8 @@ A DayZ server browser and launcher for Linux and Windows, written in Rust. It co
 [DayZ map overlay](https://github.com/BrokeAsh/dayz-map-overlay) built in: while the browser is
 open, the overlay runs in the background, ready for the game.
 
+![The browser: about 10,000 servers sorted by players, with a modded server selected and its details and mod list on the right](docs/screenshots/main.jpg)
+
 - Lists every server DZSA Launcher knows (about 10,000), with search and filters (maps, empty,
   full, locked, first or third person, vanilla or modded, players, server size, ping, game
   version, favorites). **More filters** adds country, official or community, in-game day or
@@ -62,6 +64,11 @@ By default the list comes from DZSA Launcher's public API, which most third-part
 use. It's cached for 5 minutes and refreshed when you ask (at most every 30 seconds). Servers DZSA
 marks as sponsors get no special place: the browser sorts the list itself.
 
+<p align="center">
+  <img src="docs/screenshots/filters.jpg" height="420" alt="The filters with the map list open: type to search, and each map with its server count">
+  <img src="docs/screenshots/filters-more.jpg" height="420" alt="The filters with More filters open: country, official or community, in-game time, time speed, BattlEye, low population, and likely fakes">
+</p>
+
 In a narrow window the Time, Country, Mods, and Queue columns make way, in that order (a queue then
 shows with the players, as `60/60 +5`), and the details panel gets narrower, so the server name,
 map, players, ping, and padlock always show. Escape closes the window in front (Join, Settings,
@@ -73,6 +80,8 @@ The key is kept in your system keyring (KWallet or GNOME Keyring, or Windows Cre
 never in the settings file or logs. Don't share it: it's tied to your Steam account.
 
 ### Connecting by address
+
+![The Connect by address window, with Find servers on my network](docs/screenshots/connect.jpg)
 
 **Connect by address** takes an IP or host name with the port from the server's ad (its game
 port). Servers answer queries on a separate port, most often the game port + 1 or 27016, so the
@@ -184,7 +193,11 @@ hasn't finished getting) are listed apart, and can be deleted. Steam records one
 so a mod two accounts on this computer use may show as another account's; it stays an installed
 mod and is never offered for deleting. Nothing is unsubscribed or deleted while DayZ runs.
 
+![The Mods window: installed Workshop mods with their size, last update, and how many of your servers use them](docs/screenshots/mods.jpg)
+
 ### Launching
+
+![The Join window for a full server: its mods, all installed, the queue warning, and Join when there's room](docs/screenshots/join.jpg)
 
 - **Linux:** `steam -applaunch 221100 -nolauncher -connect=<ip>:<port>:<query port> -mod=...`.
   Steam runs the game under Proton with BattlEye. Steam on Linux hangs when launch arguments pass
@@ -227,6 +240,11 @@ from the [Discord developer portal](https://discord.com/developers/applications)
 one leave it out entirely.
 
 ### Notifications
+
+<p align="center">
+  <img src="docs/screenshots/menu.jpg" width="49%" alt="The right-click menu on a server row, with Notify when there's room">
+  <img src="docs/screenshots/watch.jpg" width="49%" alt="Watched servers with a bell after their names, and the Watch list window with each one's players and queue">
+</p>
 
 Right-click a server and pick **Notify when there's room** (or click **🔔 Notify** in its details)
 to put it on your watch list; such servers have a bell after their name, and the status bar's bell
