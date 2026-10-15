@@ -224,6 +224,22 @@ impl App {
     pub(super) fn update_button(&mut self, ui: &mut egui::Ui) {
         let mut start = None;
         match &self.update {
+            // Installed by a package manager: it updates the browser, not the browser itself.
+            UpdateStatus::Available(release) if !update::can_update_itself() => {
+                ui.label(RichText::new(format!("⬆ {} is out", release.version)).color(GOOD))
+                    .on_hover_ui(|ui| {
+                        ui.label(
+                            "Update the browser the way you installed it, such as with your \
+                             package manager.",
+                        );
+                        if ui
+                            .link(format!("What's new in {}", release.version))
+                            .clicked()
+                        {
+                            open_page(&release.page);
+                        }
+                    });
+            }
             UpdateStatus::Available(release) | UpdateStatus::Failed(release, _) => {
                 let failed = match &self.update {
                     UpdateStatus::Failed(_, e) => Some(sentence(e)),
@@ -322,10 +338,12 @@ impl App {
                     ui.label(RichText::new("✔ Up to date").color(GOOD));
                 }
                 UpdateStatus::Available(r) => {
-                    ui.label(
-                        RichText::new(format!("{} is out: use Update at the top.", r.version))
-                            .color(GOOD),
-                    );
+                    let how = if update::can_update_itself() {
+                        "use Update at the top"
+                    } else {
+                        "update it the way you installed it"
+                    };
+                    ui.label(RichText::new(format!("{} is out: {how}.", r.version)).color(GOOD));
                     if ui.link("What's new").clicked() {
                         open_page(&r.page);
                     }

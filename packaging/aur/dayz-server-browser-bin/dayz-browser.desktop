@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DayZ Server Browser
+Comment=Find DayZ servers, get their mods, and join, with the DayZ map overlay built in
+Exec=dayz-browser
+Icon=applications-games
+Terminal=false
+Categories=Game;
+Keywords=dayz;server;browser;launcher;map;
+StartupWMClass=dayz-browser

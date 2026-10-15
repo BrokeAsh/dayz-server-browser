@@ -223,6 +223,13 @@ pub fn install_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Whether the browser can update its own folder: not when a package manager installed it
+/// (checked once).
+pub fn can_update_itself() -> bool {
+    static CAN: OnceLock<bool> = OnceLock::new();
+    *CAN.get_or_init(|| install_dir().is_ok())
+}
+
 /// Updates to `release`: downloads it (reporting bytes so far, and the total if known), and once
 /// it's checked and the new browser runs, calls `before_install` and puts the new files in place.
 /// Returns the new browser program. Nothing changes if the download fails, the new browser

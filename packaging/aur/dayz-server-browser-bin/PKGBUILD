@@ -1,0 +1,35 @@
+# Maintainer: BrokeAsh <158607416+BrokeAsh@users.noreply.github.com>
+
+pkgname=dayz-server-browser-bin
+_name=dayz-browser
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="DayZ server browser and launcher, with the DayZ map overlay built in"
+arch=('x86_64')
+url="https://github.com/BrokeAsh/dayz-server-browser"
+license=('MIT' 'Apache-2.0')
+# The browser's window (Wayland or X11, through EGL) and notifications (D-Bus); the overlay's
+# Wayland window. The Workshop helper uses the bundled Steamworks library.
+depends=('dbus' 'gcc-libs' 'glibc' 'libglvnd' 'libx11' 'libxcursor' 'libxi' 'libxkbcommon'
+         'libxkbcommon-x11' 'systemd-libs' 'wayland')
+optdepends=('steam: launching DayZ and downloading Workshop mods')
+provides=('dayz-server-browser')
+conflicts=('dayz-server-browser')
+# Prebuilt release files, kept as they are (the Workshop helper finds Valve's library beside it).
+options=('!strip' '!debug')
+source=("$url/releases/download/v$pkgver/$_name-v$pkgver-linux-x86_64.tar.gz"
+        "$_name.desktop")
+sha256sums=('0fd7eac8fe3abce5fe0b1e44eaa22413a85bc1fc8aa4e1e0c8a68f55021c7fb5'
+            '5622508ea978033d97a4c72eb6d5fd63d7eddbf827167edf54e72bfdeca19ab2')
+
+package() {
+  cd "$_name-v$pkgver-linux-x86_64"
+  local dir="$pkgdir/opt/dayz-server-browser"
+  install -Dm755 -t "$dir" dayz-browser dayz-browser-workshop dayz-map
+  install -Dm644 -t "$dir" libsteam_api.so
+  install -d "$pkgdir/usr/bin"
+  ln -s /opt/dayz-server-browser/dayz-browser "$pkgdir/usr/bin/dayz-browser"
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md CHANGELOG.md
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE-MIT LICENSE-APACHE
+  install -Dm644 "$srcdir/$_name.desktop" "$pkgdir/usr/share/applications/$_name.desktop"
+}

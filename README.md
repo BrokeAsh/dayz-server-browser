@@ -6,6 +6,11 @@ open, the overlay runs in the background, ready for the game.
 
 ![The browser: about 10,000 servers sorted by players, with a modded server selected and its details and mod list on the right](docs/screenshots/main.jpg)
 
+> **Anti-cheat:** neither the browser nor the overlay reads or changes the game's memory. The
+> browser starts DayZ the way Steam and the official launcher do, and the overlay reads the
+> game's files and logs and draws its own window (see the overlay's
+> [Anti-cheat](https://github.com/BrokeAsh/dayz-map-overlay#anti-cheat) notes).
+
 - Lists every server DZSA Launcher knows (about 10,000), with search and filters (maps, empty,
   full, locked, first or third person, vanilla or modded, players, server size, ping, game
   version, favorites). **More filters** adds country, official or community, in-game day or
@@ -42,7 +47,9 @@ you can write to:
 
 - **Linux:** for example `~/.local/opt/dayz-browser`, then run `dayz-browser` from there (or link
   it into `~/.local/bin`).
-- **Windows:** any folder, such as one in your Documents, then run `dayz-browser.exe`.
+- **Windows:** any folder, such as one in your Documents, then run `dayz-browser.exe`. It isn't
+  signed yet, so the first time Windows may show "Windows protected your PC": click **More
+  info**, then **Run anyway**.
 
 Everything comes in that one folder: the browser, the Workshop helper, the map overlay, and
 Valve's Steamworks library.
