@@ -12,5 +12,6 @@ For each release, once it's published on GitHub:
 packaging/aur/update.sh 0.3.1     # version, checksums, .SRCINFO
 ```
 
-then copy `dayz-server-browser-bin/PKGBUILD`, `.SRCINFO` and `dayz-browser.desktop` into a
+Commit the result here (the README's Arch Linux steps build from it). Then copy
+`dayz-server-browser-bin/PKGBUILD`, `.SRCINFO` and `dayz-browser.desktop` into a
 clone of `ssh://aur@aur.archlinux.org/dayz-server-browser-bin.git`, commit, and push.

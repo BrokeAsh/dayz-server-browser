@@ -47,6 +47,17 @@ you can write to:
 
 - **Linux:** for example `~/.local/opt/dayz-browser`, then run `dayz-browser` from there (or link
   it into `~/.local/bin`).
+- **Arch Linux:** build and install the package (it'll be on the AUR once new accounts can
+  sign up there again). It installs the release into `/opt/dayz-server-browser`, with
+  `dayz-browser` on your `PATH` and a menu entry. To update, run `git pull` in that folder and
+  `makepkg -si` again.
+
+  ```sh
+  git clone https://github.com/BrokeAsh/dayz-server-browser
+  cd dayz-server-browser/packaging/aur/dayz-server-browser-bin
+  makepkg -si
+  ```
+
 - **Windows:** any folder, such as one in your Documents, then run `dayz-browser.exe`. It isn't
   signed yet, so the first time Windows may show "Windows protected your PC": click **More
   info**, then **Run anyway**.
