@@ -237,20 +237,37 @@ impl App {
                         None => "—".into(),
                     },
                 );
-                let first = tags
-                    .as_ref()
-                    .map(|t| t.first_person)
-                    .unwrap_or(s.first_person);
-                row(
-                    ui,
-                    "Camera",
-                    if first {
+                let (first, reported) = match (&info, &tags) {
+                    (Some(i), Some(t)) => (
+                        self.flipped.first_person(
+                            &i.name,
+                            if i.version.is_empty() {
+                                &s.version
+                            } else {
+                                &i.version
+                            },
+                            t.first_person,
+                        ),
+                        t.first_person,
+                    ),
+                    _ => (s.first_person, s.reported_first_person),
+                };
+                ui.label(RichText::new("Camera").weak());
+                let camera = ui.add(
+                    egui::Label::new(if first {
                         "First person only"
                     } else {
                         "First and third person"
-                    }
-                    .into(),
+                    })
+                    .wrap(),
                 );
+                if first != reported {
+                    camera.on_hover_text(
+                        "The server reports the opposite, but servers on this version of DayZ \
+                         get it backwards, so this goes by its name or turns the report around.",
+                    );
+                }
+                ui.end_row();
                 let version = info
                     .as_ref()
                     .map(|i| i.version.clone())

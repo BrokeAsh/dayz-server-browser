@@ -194,6 +194,7 @@ fn convert(e: Entry) -> Option<Server> {
         version: e.version.unwrap_or_default(),
         password: e.password.unwrap_or(false),
         first_person: e.first_person_only.unwrap_or(false),
+        reported_first_person: e.first_person_only.unwrap_or(false),
         battleye: e.battl_eye.unwrap_or(true),
         queue: None,
         modded: !mods.is_empty(),

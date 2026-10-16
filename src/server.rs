@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use crate::settings::lenient;
 
@@ -20,7 +21,11 @@ pub struct Server {
     pub time: Option<String>,
     pub version: String,
     pub password: bool,
+    /// Whether third person is off, as worked out from `reported_first_person` and the name
+    /// (see [`Flipped`]).
     pub first_person: bool,
+    /// What the server's `no3rd` tag says, which some builds of the game get backwards.
+    pub reported_first_person: bool,
     pub battleye: bool,
     /// Players waiting to get in.
     pub queue: Option<u32>,
@@ -80,6 +85,111 @@ pub fn map_title(map: &str) -> String {
 /// `deerisle` and `DeerIsle`) count as one map.
 pub fn map_key(map: &str) -> String {
     map_title(map).to_lowercase()
+}
+
+/// What a server's name says about third person: `Some(true)` for first person only
+/// (`1PP`, `FPP`, `1st Person Only`, `No 3PP`), `Some(false)` for third person (`3PP`, `TPP`,
+/// `3rd Person`), `None` when it says neither or both (`1PP/3PP`).
+pub fn named_first_person(name: &str) -> Option<bool> {
+    let upper = name.to_uppercase();
+    let words: Vec<&str> = upper
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let (mut first, mut third) = (false, false);
+    for (i, w) in words.iter().enumerate() {
+        let next = words.get(i + 1).copied();
+        let after_no = i > 0 && words[i - 1] == "NO";
+        match *w {
+            "1PP" | "FPP" => first = true,
+            "1ST" | "FIRST" if next == Some("PERSON") => first = true,
+            "3PP" | "TPP" if after_no => first = true,
+            "3RD" | "THIRD" if after_no => first = true,
+            "3PP" | "TPP" => third = true,
+            "3RD" | "THIRD" if next == Some("PERSON") => third = true,
+            // `1/3PP`
+            "1" if next == Some("3PP") => first = true,
+            _ => {}
+        }
+    }
+    match (first, third) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// Game builds whose servers report the first-person setting backwards. DayZ 1.30's servers
+/// put `no3rd` in their tags when third person is *on*: of the servers whose names say 1PP or
+/// 3PP, more than nine in ten report the opposite, official ones included.
+const KNOWN_FLIPPED: &[&str] = &["1.30.164078"];
+
+/// Which builds report the first-person setting backwards, worked out from a list by comparing
+/// what servers report with what their names say; builds with too few such servers to tell
+/// fall back to [`KNOWN_FLIPPED`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Flipped {
+    /// Build → whether it's flipped, for builds the list had enough named servers of.
+    builds: HashMap<String, bool>,
+}
+
+impl Flipped {
+    /// Named servers a build needs, and how lopsided they must be, to decide it from the list.
+    const ENOUGH: u32 = 20;
+    const MARGIN: u32 = 4;
+
+    pub fn learn(servers: &[Server]) -> Self {
+        let mut counts: HashMap<&str, (u32, u32)> = HashMap::new();
+        for s in servers {
+            if let Some(named) = named_first_person(&s.name) {
+                let (agree, disagree) = counts.entry(s.version.as_str()).or_default();
+                if named == s.reported_first_person {
+                    *agree += 1;
+                } else {
+                    *disagree += 1;
+                }
+            }
+        }
+        let builds = counts
+            .into_iter()
+            .filter_map(|(build, (agree, disagree))| {
+                let flipped = if disagree >= Self::ENOUGH && disagree >= agree * Self::MARGIN {
+                    true
+                } else if agree >= Self::ENOUGH && agree >= disagree * Self::MARGIN {
+                    false
+                } else {
+                    return None;
+                };
+                Some((build.to_string(), flipped))
+            })
+            .collect();
+        Flipped { builds }
+    }
+
+    pub fn is_flipped(&self, version: &str) -> bool {
+        self.builds
+            .get(version)
+            .copied()
+            .unwrap_or_else(|| KNOWN_FLIPPED.contains(&version))
+    }
+
+    /// Whether third person is off on a server with this name and build that reports
+    /// `reported`. On a flipped build the name wins when it says; otherwise the report is
+    /// turned around.
+    pub fn first_person(&self, name: &str, version: &str, reported: bool) -> bool {
+        if self.is_flipped(version) {
+            named_first_person(name).unwrap_or(!reported)
+        } else {
+            reported
+        }
+    }
+
+    /// Sets each server's `first_person` from what it reports.
+    pub fn apply(&self, servers: &mut [Server]) {
+        for s in servers {
+            s.first_person = self.first_person(&s.name, &s.version, s.reported_first_person);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -819,5 +929,72 @@ mod tests {
         assert_eq!(map_title("takistanplus"), "Takistanplus");
         assert_eq!(map_key("enoch"), map_key("Livonia"));
         assert_eq!(map_key("DeerIsle"), "deer isle");
+    }
+
+    #[test]
+    fn names_say_first_or_third_person() {
+        for name in [
+            "2554 | NORTH AMERICA - NY | 1st Person Only",
+            "COLD IRON | 1PP | AI Bots",
+            "[EU/UA] Bavovna Ukraine [1PP] Vanilla+",
+            "Falun, 1st Person only",
+            "Northern Trails ¦ PVE ¦ FPP",
+            "Hardcore | No 3PP | PvP",
+            "First-Person Chernarus",
+        ] {
+            assert_eq!(named_first_person(name), Some(true), "{name}");
+        }
+        for name in ["Rearmed | 3PP | PvP", "TPP Namalsk", "3rd Person Deer Isle"] {
+            assert_eq!(named_first_person(name), Some(false), "{name}");
+        }
+        for name in [
+            "2545 | NORTH AMERICA - NY",
+            "Mixed 1PP/3PP",
+            "1/3PP server",
+            "3PPX Survival",
+            "Thirdperson",
+        ] {
+            assert_eq!(named_first_person(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn learns_which_builds_report_first_person_backwards() {
+        let named = |name: &str, version: &str, reported: bool| Server {
+            name: name.into(),
+            version: version.into(),
+            reported_first_person: reported,
+            ..Default::default()
+        };
+        let mut list = Vec::new();
+        for _ in 0..30 {
+            // 1.31 gets it backwards, 1.29 right.
+            list.push(named("A | 1PP", "1.31.1", false));
+            list.push(named("B | 3PP", "1.31.1", true));
+            list.push(named("C | 1PP", "1.29.1", true));
+        }
+        list.push(named("D | 1PP", "1.31.1", true));
+        list.push(named("Plain", "1.31.1", true));
+        list.push(named("Plain", "1.29.1", true));
+        let flipped = Flipped::learn(&list);
+        assert!(flipped.is_flipped("1.31.1"));
+        assert!(!flipped.is_flipped("1.29.1"));
+        // Too few to tell: the known list decides.
+        assert!(flipped.is_flipped("1.30.164078"));
+        assert!(!flipped.is_flipped("1.28.0"));
+        flipped.apply(&mut list);
+        let first = |i: usize| list[i].first_person;
+        assert!(first(0) && !first(1) && first(2));
+        // On a flipped build the name wins, and a nameless report is turned around.
+        assert!(first(90));
+        assert!(!first(91));
+        assert!(first(92));
+        // Applying again gives the same answer.
+        let again = list.clone();
+        flipped.apply(&mut list);
+        assert_eq!(
+            again.iter().map(|s| s.first_person).collect::<Vec<_>>(),
+            list.iter().map(|s| s.first_person).collect::<Vec<_>>()
+        );
     }
 }

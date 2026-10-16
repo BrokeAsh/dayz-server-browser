@@ -122,6 +122,7 @@ pub fn found(ip: IpAddr, query_port: u16, info: Info, took: Duration) -> Found {
         version: info.version.clone(),
         password: info.password,
         first_person: tags.first_person,
+        reported_first_person: tags.first_person,
         battleye: tags.battleye,
         queue: tags.queue,
         mods: Vec::new(),

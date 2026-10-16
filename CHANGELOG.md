@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- First person only filter and Camera row fixed for DayZ 1.30. Servers on 1.30 report the
+  first-person setting backwards (official ones included), so 3PP servers showed as 1PP and
+  1PP servers as 3PP. The browser now spots builds that do this by comparing what servers report
+  with what their names say, and goes by the name or turns the report around.
+- When the browser was installed by a package manager and can't update its own folder, it says
+  a new version is out instead of showing the Update button.
+
 ## 0.3.0
 
 - Map overlay 0.3.0: your own markers. Right-click the map to add a home, enemy or friendly

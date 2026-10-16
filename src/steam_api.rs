@@ -155,6 +155,7 @@ fn convert(s: ListServer) -> Option<Server> {
         // Not in Steam's list; A2S_INFO fills it in.
         password: false,
         first_person: tags.first_person,
+        reported_first_person: tags.first_person,
         battleye: tags.battleye,
         queue: tags.queue,
         mods: Vec::new(),

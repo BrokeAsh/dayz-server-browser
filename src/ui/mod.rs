@@ -172,6 +172,8 @@ pub struct App {
     /// `servers`, which holds `listed` fetched servers first.
     added: Vec<Server>,
     listed: usize,
+    /// Builds that report first person backwards, as the fetched list shows.
+    flipped: server::Flipped,
     /// A server being looked up from Recent, and the last such lookup that failed.
     looking_up: Option<String>,
     lookup_failed: Option<(String, String)>,
@@ -260,6 +262,7 @@ impl App {
             servers: Vec::new(),
             added: Vec::new(),
             listed: 0,
+            flipped: server::Flipped::default(),
             looking_up: None,
             lookup_failed: None,
             last_launch: None,
@@ -761,12 +764,14 @@ impl App {
     /// Puts in a fetched list. Servers added by address that it lacks go after it.
     fn set_servers(&mut self, mut servers: Vec<Server>) {
         self.listed = servers.len();
+        self.flipped = server::Flipped::learn(&servers);
         let listed: HashSet<String> = servers.iter().map(Server::addr).collect();
         for added in &self.added {
             if !listed.contains(&added.addr()) {
                 servers.push(added.clone());
             }
         }
+        self.flipped.apply(&mut servers);
         self.servers = servers;
         // The old view's indexes don't apply to the new list.
         self.view.clear();
