@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - First person only filter and Camera row fixed for DayZ 1.30. Servers on 1.30 report the
   first-person setting backwards (official ones included), so 3PP servers showed as 1PP and
@@ -8,6 +8,11 @@
   with what their names say, and goes by the name or turns the report around.
 - When the browser was installed by a package manager and can't update its own folder, it says
   a new version is out instead of showing the Update button.
+- Map overlay 0.3.1: on Windows, click the map to use the mouse on it. The map still opens
+  without taking focus, so you keep moving and the wheel zooms; a click makes it the active
+  window (that click does nothing else, though DayZ sees it too), and then you can pan, drag,
+  and place markers. Alt+Tab back to the game leaves the map open; M or the × button closes it
+  and puts you back in the game. Linux is unchanged.
 
 ## 0.3.0
 
