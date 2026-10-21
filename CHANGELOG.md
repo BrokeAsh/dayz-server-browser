@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Map overlay 0.4.0: find where items spawn. **Items…** in the map's toolbar lists everything
+  the map's loot can spawn, by kind (guns, ammo, food, drinks, medical, clothing, ...). Tick a
+  kind or single items, or search for one by name, and the map shows the buildings they can
+  spawn in. The search box borrows the keyboard only while you type in it.
+
 ## 0.3.2
 
 - Map overlay 0.3.2: place names on Sakhal and Nasdara. Their world files are encrypted, so the
