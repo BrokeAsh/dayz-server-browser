@@ -2,7 +2,7 @@
 
 pkgname=dayz-server-browser-bin
 _name=dayz-browser
-pkgver=0.3.2
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="DayZ server browser and launcher, with the DayZ map overlay built in"
 arch=('x86_64')
@@ -19,7 +19,7 @@ conflicts=('dayz-server-browser')
 options=('!strip' '!debug')
 source=("$url/releases/download/v$pkgver/$_name-v$pkgver-linux-x86_64.tar.gz"
         "$_name.desktop")
-sha256sums=('675766ccecb161d03fe1abacf2bbee74995f17830ec5ed3c8d91f861062995f3'
+sha256sums=('6527aeba90d53ef6a52bfc865cf0c46d1be2168a175b958d570fb364438fce3f'
             '5622508ea978033d97a4c72eb6d5fd63d7eddbf827167edf54e72bfdeca19ab2')
 
 package() {
