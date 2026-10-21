@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Map overlay 0.3.2: place names on Sakhal and Nasdara. Their world files are encrypted, so the
+  overlay now carries a copy of the names the game itself loads.
+
 ## 0.3.1
 
 - First person only filter and Camera row fixed for DayZ 1.30. Servers on 1.30 report the
